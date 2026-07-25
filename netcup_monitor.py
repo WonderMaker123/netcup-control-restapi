@@ -155,8 +155,33 @@ class NetcupTrafficMonitor:
 
     def _is_localhost(self, host: str) -> bool:
         """判断目标主机是否为本地"""
-        local_ips = ['127.0.0.1', 'localhost', '::1', '']
-        return host in local_ips or host.startswith('127.') or host == '0.0.0.0'
+        if not host:
+            return True
+        local_ips = ['127.0.0.1', 'localhost', '::1']
+        if host in local_ips or host.startswith('127.') or host == '0.0.0.0':
+            return True
+        # 检查是否为本机网卡 IP
+        try:
+            import socket
+            local_ip = socket.gethostbyname(socket.gethostname())
+            if host == local_ip:
+                return True
+        except Exception:
+            pass
+        # 通过 ip addr 获取所有本机 IP
+        try:
+            result = subprocess.run(
+                ["ip", "-4", "addr", "show", "scope", "global"],
+                capture_output=True, text=True, timeout=5
+            )
+            for line in result.stdout.split('\n'):
+                if 'inet ' in line:
+                    ip = line.strip().split()[1].split('/')[0]
+                    if host == ip:
+                        return True
+        except Exception:
+            pass
+        return False
 
     def _service_control(self, action: str) -> bool:
         """
