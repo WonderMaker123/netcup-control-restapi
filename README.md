@@ -260,7 +260,7 @@ systemctl start netcup-monitor
 
 ## 策略对比表
 
-`throttle_action.strategy` 支持以下 5 种策略：
+`throttle_action.strategy` 支持以下 6 种策略：
 
 | 策略 | 限速触发时 | 恢复时 | 适用场景 |
 |------|-----------|--------|---------|
@@ -269,6 +269,7 @@ systemctl start netcup-monitor
 | `pause_resume` | 🗑 删除下载中种子，⏸ 暂停已完成种子 | ▶️ 恢复已完成 | 彻底停掉所有流量 |
 | `pause_downloading` | ⏸ 暂停下载中种子，➡ 已完成不动（继续做种） | ▶️ 恢复下载中 | 下载中临时停，做种不影响 |
 | `delete_downloading` | 🗑 删除下载中种子，➡ 已完成不动（继续做种） | 无需恢复 | 删下载中的，做种不动 |
+| `service` | 🛑 直接停止 systemd 服务（qB 进程完全退出） | ▶️ 启动服务 | 彻底停 qB，零资源占用 |
 
 **选择建议：**
 
@@ -276,6 +277,37 @@ systemctl start netcup-monitor
 - 超限后只保留做种贡献，删下载中的 → 用 `delete` 或 `delete_downloading`
 - 超限后完全停掉所有流量（不产生任何流量） → 用 `pause_resume`
 - 下载中的暂停，做种继续 → 用 `pause_downloading`
+- **想彻底关掉 qB 进程，恢复后自动续种** → 用 `service`
+
+### service 策略配置
+
+使用 `service` 策略时，需要在 `throttle_action` 中配置 `service` 段：
+
+```json
+"throttle_action": {
+    "strategy": "service",
+    "service": {
+        "name": "qbittorrent-nox@wonder.service"
+    }
+}
+```
+
+如果 qBittorrent 在远程机器上，可以添加 SSH 配置：
+
+```json
+"throttle_action": {
+    "strategy": "service",
+    "service": {
+        "name": "qbittorrent-nox@wonder.service",
+        "host": "192.168.1.100",
+        "port": 22,
+        "username": "root",
+        "password": "your_password"
+    }
+}
+```
+
+> **说明：** 不填 `host` 时默认控制本机服务。远程控制需要安装 `sshpass`：`apt install sshpass`
 
 ---
 

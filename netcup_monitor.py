@@ -1,5 +1,6 @@
 import os
 import json
+import subprocess
 import threading
 import time
 import requests
@@ -41,8 +42,24 @@ class NetcupTrafficMonitor:
         exclude_categories_str = throttle_config.get('exclude_categories', '')
         self.exclude_categories = self._parse_exclude_categories(exclude_categories_str)
         
+        # 服务控制策略配置（SSH/systemctl）
+        self.service_config = throttle_config.get('service', {})
+        self.service_name = self.service_config.get('name', '')
+        self.ssh_config = {
+            'host': self.service_config.get('host', ''),
+            'port': self.service_config.get('port', 22),
+            'username': self.service_config.get('username', ''),
+            'password': self.service_config.get('password', ''),
+        }
+        
         logger.info(f"[配置] 限速处理策略: {self.throttle_strategy}")
-        if self.throttle_strategy == 'delete':
+        if self.throttle_strategy == 'service':
+            logger.info(f"[配置] 服务控制: {self.service_name}")
+            if self.ssh_config.get('host'):
+                logger.info(f"[配置] SSH 远程控制: {self.ssh_config['host']}:{self.ssh_config['port']}")
+            else:
+                logger.info("[配置] 本地服务控制")
+        if self.throttle_strategy in ('delete', 'delete_downloading', 'pause_resume'):
             logger.info(f"[配置] 删除文件: {self.delete_files}")
         if self.exclude_categories:
             logger.info(f"[配置] 排除分类: {self.exclude_categories}")
@@ -135,6 +152,75 @@ class NetcupTrafficMonitor:
                 "servers": servers
             }
         }
+
+    def _is_localhost(self, host: str) -> bool:
+        """判断目标主机是否为本地"""
+        local_ips = ['127.0.0.1', 'localhost', '::1', '']
+        return host in local_ips or host.startswith('127.') or host == '0.0.0.0'
+
+    def _service_control(self, action: str) -> bool:
+        """
+        通过 systemctl 控制服务（本地或远程 SSH）
+        
+        Args:
+            action: 'start' 或 'stop'
+            
+        Returns:
+            bool: 是否成功
+        """
+        if not self.service_name:
+            logger.error("[服务控制] 未配置 service_name")
+            return False
+
+        cmd = f"systemctl {action} {self.service_name}"
+        ssh_host = self.ssh_config.get('host', '')
+
+        try:
+            if self._is_localhost(ssh_host):
+                # 本地直接执行
+                result = subprocess.run(
+                    cmd.split(),
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                if result.returncode == 0:
+                    logger.info(f"[服务控制] 本地 systemctl {action} {self.service_name} 成功")
+                    return True
+                else:
+                    logger.error(f"[服务控制] 本地 systemctl {action} 失败: {result.stderr.strip()}")
+                    return False
+            else:
+                # 远程 SSH 执行
+                ssh_cmd = [
+                    'sshpass', '-p', self.ssh_config.get('password', ''),
+                    'ssh', '-o', 'StrictHostKeyChecking=no',
+                    '-o', 'ConnectTimeout=10',
+                    '-p', str(self.ssh_config.get('port', 22)),
+                    f"{self.ssh_config['username']}@{ssh_host}",
+                    cmd
+                ]
+                result = subprocess.run(
+                    ssh_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                if result.returncode == 0:
+                    logger.info(f"[服务控制] SSH {ssh_host} systemctl {action} {self.service_name} 成功")
+                    return True
+                else:
+                    logger.error(f"[服务控制] SSH {ssh_host} systemctl {action} 失败: {result.stderr.strip()}")
+                    return False
+        except subprocess.TimeoutExpired:
+            logger.error(f"[服务控制] systemctl {action} 超时 (30秒)")
+            return False
+        except FileNotFoundError:
+            logger.error("[服务控制] sshpass 未安装，远程 SSH 控制需要 sshpass: apt install sshpass")
+            return False
+        except Exception as e:
+            logger.error(f"[服务控制] systemctl {action} 异常: {e}")
+            return False
 
 
     def _parse_exclude_categories(self, categories_str: str) -> list[str]:
@@ -632,6 +718,10 @@ class NetcupTrafficMonitor:
         elif self.throttle_strategy == 'delete_downloading':
             # delete_downloading 策略: 不需要恢复(下载中种子已被删除,已完成种子从未暂停)
             logger.info(f"[qBittorrent] {ip} 使用delete_downloading策略,无需恢复种子")
+        elif self.throttle_strategy == 'service':
+            # service 策略: 启动服务
+            logger.info(f"[服务控制] 启用 {ip} 的下载器，启动服务 {self.service_name}")
+            self._service_control('start')
             
 
     def disable_downloader(self, ip: str, url: str = None, username: str = None, password: str = None):
@@ -704,6 +794,11 @@ class NetcupTrafficMonitor:
                     )
                     action = "删除下载中种子(含文件)" if self.delete_files else "删除下载中种子(保留文件)"
                     logger.info(f"[qBittorrent] {action}，已完成继续做种 - {ip} - delete_downloading策略{exclude_msg}")
+                    
+                elif self.throttle_strategy == 'service':
+                    # 策略6: 直接停止系统服务
+                    logger.info(f"[服务控制] 禁用 {ip} 的下载器，停止服务 {self.service_name}{exclude_msg}")
+                    self._service_control('stop')
                     
                 else:
                     logger.warning(f"[qBittorrent] 未知策略: {self.throttle_strategy},默认执行暂停")

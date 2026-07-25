@@ -18,8 +18,11 @@
     "chat_id": "你的chat_id请修改"
   },
   "throttle_action": {
-    "strategy": "pause_resume",     
-    "delete_files": true,
-    "exclude_categories": "keep,ssd..."
-  }
+      "strategy": "pause_resume",
+      "delete_files": true,
+      "exclude_categories": "keep,tl",
+      "service": {
+        "name": "qbittorrent-nox@wonder.service"
+      }
+    }
 }
