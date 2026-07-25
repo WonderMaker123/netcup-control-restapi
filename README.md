@@ -250,11 +250,32 @@ systemctl start netcup-monitor
 | `vertex.cookie` | 否 | Vertex 登录 Cookie |
 | `telegram.bot_token` | 否 | Telegram Bot Token（@BotFather 创建） |
 | `telegram.chat_id` | 否 | 接收通知的 Telegram 聊天 ID |
-| `throttle_action.strategy` | 否 | 限速策略：`pause`（暂停所有）、`delete`（删除下载中）、`pause_resume`（删除下载中+暂停已完成） |
+| `throttle_action.strategy` | 否 | 限速策略，详见下方 [策略对比表](#策略对比表) |
 | `throttle_action.delete_files` | 否 | 删除时是否同时删除文件（`true`/`false`） |
 | `throttle_action.exclude_categories` | 否 | 排除的 qBittorrent 分类，多个用逗号分隔，如 `"keep,tl"` |
 
 **注意：** `rest_accounts` 通过 `gen-token-config.py` 自动获取，不要手动填写。其他配置项根据需要手动补全。
+
+---
+
+## 策略对比表
+
+`throttle_action.strategy` 支持以下 5 种策略：
+
+| 策略 | 限速触发时 | 恢复时 | 适用场景 |
+|------|-----------|--------|---------|
+| `pause` | ⏸ 暂停所有种子（下载中+已完成） | ▶️ 恢复所有 | 临时停下载，恢复后继续 |
+| `delete` | 🗑 删除下载中种子，🔄 已完成暂停做种 | 无需恢复 | 保证做种，删下载中占带宽的 |
+| `pause_resume` | 🗑 删除下载中种子，⏸ 暂停已完成种子 | ▶️ 恢复已完成 | 彻底停掉所有流量 |
+| `pause_downloading` | ⏸ 暂停下载中种子，➡ 已完成不动（继续做种） | ▶️ 恢复下载中 | 下载中临时停，做种不影响 |
+| `delete_downloading` | 🗑 删除下载中种子，➡ 已完成不动（继续做种） | 无需恢复 | 删下载中的，做种不动 |
+
+**选择建议：**
+
+- 只是临时超限，恢复后要继续全部下载 → 用 `pause`
+- 超限后只保留做种贡献，删下载中的 → 用 `delete` 或 `delete_downloading`
+- 超限后完全停掉所有流量（不产生任何流量） → 用 `pause_resume`
+- 下载中的暂停，做种继续 → 用 `pause_downloading`
 
 ---
 
