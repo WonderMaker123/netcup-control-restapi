@@ -2,13 +2,12 @@
   "webhook_path": "/webhook/密钥字符请修改",
   "port": 56666,
   "rest_accounts": [
-  {
-    "account_id": "327110",
-    "access_token": "",
-    "refresh_token": ""
-  }
-
-],
+    {
+      "account_id": "327110",
+      "access_token": "",
+      "refresh_token": ""
+    }
+  ],
   "vertex": {
     "base_url": "http://你的Vertex服务器IP:3000",
     "cookie": ""
@@ -18,11 +17,15 @@
     "chat_id": "你的chat_id请修改"
   },
   "throttle_action": {
-      "strategy": "pause_resume",
-      "delete_files": true,
-      "exclude_categories": "keep,tl",
-      "service": {
-        "name": "qbittorrent-nox@wonder.service"
-      }
+    "strategy": "service",
+    "delete_files": true,
+    "exclude_categories": "keep,tl",
+    "service": {
+      "name": "qbittorrent-nox@wonder.service",
+      "host": "192.168.1.100",
+      "port": 22,
+      "username": "这里填SSH用户名",
+      "password": "这里填SSH密码"
     }
+  }
 }
