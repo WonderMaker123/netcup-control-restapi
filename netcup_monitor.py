@@ -68,7 +68,14 @@ class NetcupTrafficMonitor:
                 bot_token=self.telegram_bot_token,
                 chat_id=self.telegram_chat_id
             )
-            logger.info("[Telegram] 通知功能已启用")
+            # 注册 Bot 命令菜单
+            self.telegram_notifier.set_commands()
+            # 设置命令回调函数
+            self.telegram_notifier.get_status_callback = self._get_status_data
+            self.telegram_notifier.get_report_callback = self.fetch_vertex_run_info
+            # 启动命令轮询
+            self.telegram_notifier.start_polling()
+            logger.info("[Telegram] 通知功能已启用，Bot 命令菜单已注册")
         else:
             logger.warning("[Telegram] 通知功能未配置或已禁用")
 
@@ -103,6 +110,31 @@ class NetcupTrafficMonitor:
         logger.info(f"Telegram 通知: {'已启用' if self.telegram_enabled else '未启用'}")
         logger.info(f"排除分类: {self.exclude_categories if self.exclude_categories else '无'}")
         logger.info("=" * 60)
+
+
+    def _get_status_data(self) -> dict:
+        """
+        获取服务器状态数据（供 Telegram Bot 命令回调使用）
+        与 /api/status 接口返回相同格式
+        """
+        servers = []
+        for ip, data in self.cached_data.items():
+            availability = self.calculate_availability(ip)
+            enhanced_data = {**data, **availability}
+            servers.append(enhanced_data)
+
+        return {
+            "success": True,
+            "data": {
+                "last_update": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                "total_servers": len(servers),
+                "throttled_count": sum(1 for s in servers if s.get('trafficThrottled')),
+                "normal_count": sum(1 for s in servers if not s.get('trafficThrottled')),
+                "throttle_strategy": self.throttle_strategy,
+                "exclude_categories": self.exclude_categories,
+                "servers": servers
+            }
+        }
 
 
     def _parse_exclude_categories(self, categories_str: str) -> list[str]:
