@@ -381,11 +381,17 @@ class QBittorrentClient:
     ) -> None:
         """
         智能限速操作：
-        1. 删除所有下载中的种子（排除指定分类）
-        2. 根据策略处理已完成的种子
+        1. 强制汇报所有种子（排除指定分类）
+        2. 分类种子：下载中、已完成、排除
+        3. 根据策略处理下载中的种子（暂停或删除）
+        4. 根据策略处理已完成的种子（暂停或保持做种）
         
         Args:
-            strategy: 'delete' 或 'pause_resume'
+            strategy: 
+                'delete' - 删除下载中，保留已完成
+                'pause_resume' - 删除下载中，暂停已完成
+                'pause_downloading' - 暂停下载中，已完成不动（继续做种）
+                'delete_downloading' - 删除下载中，已完成不动（继续做种）
             delete_files: True 时会连同本地数据一并删除（危险操作）
             exclude_categories: 要排除的分类列表
         """
@@ -403,12 +409,26 @@ class QBittorrentClient:
         to_pause = categorized['to_pause']
         to_exclude = categorized['to_exclude']
         
-        # 3. 删除下载中的种子
-        if to_delete:
+        # 3. 处理下载中的种子
+        if not to_delete:
+            logger.info("步骤3: 没有下载中的种子需要处理")
+        elif strategy == 'pause_downloading':
+            # 暂停下载中的种子
+            logger.info(f"步骤3: 暂停 {len(to_delete)} 个下载中的种子")
+            success_count = 0
+            for torrent in to_delete:
+                try:
+                    self.client.torrents_pause(torrent_hashes=torrent.hash)
+                    success_count += 1
+                    logger.info(f"  ✓ 暂停种子: [{torrent.name}] (进度: {torrent.progress*100:.1f}%)")
+                except Exception as e:
+                    logger.error(f"  ✗ 暂停失败 [{torrent.name}]: {e}")
+            logger.info(f"暂停完成: {success_count}/{len(to_delete)} 个种子")
+        else:
+            # delete / pause_resume / delete_downloading: 删除下载中的种子
             logger.info(f"步骤3: 删除 {len(to_delete)} 个下载中的种子")
             action = "删除种子和文件" if delete_files else "删除种子(保留文件)"
             success_count = 0
-            
             for torrent in to_delete:
                 try:
                     self.client.torrents_delete(
@@ -419,17 +439,13 @@ class QBittorrentClient:
                     logger.info(f"  ✓ {action}: [{torrent.name}] (进度: {torrent.progress*100:.1f}%)")
                 except Exception as e:
                     logger.error(f"  ✗ 删除失败 [{torrent.name}]: {e}")
-            
             logger.info(f"删除完成: {success_count}/{len(to_delete)} 个种子")
-        else:
-            logger.info("步骤3: 没有下载中的种子需要删除")
         
         # 4. 根据策略处理已完成的种子
         if strategy == 'pause_resume':
             if to_pause:
                 logger.info(f"步骤4: 暂停 {len(to_pause)} 个已完成的种子")
                 success_count = 0
-                
                 for torrent in to_pause:
                     try:
                         self.client.torrents_pause(torrent_hashes=torrent.hash)
@@ -437,22 +453,33 @@ class QBittorrentClient:
                         logger.info(f"  ✓ 暂停种子: [{torrent.name}]")
                     except Exception as e:
                         logger.error(f"  ✗ 暂停失败 [{torrent.name}]: {e}")
-                
                 logger.info(f"暂停完成: {success_count}/{len(to_pause)} 个种子")
             else:
                 logger.info("步骤4: 没有已完成的种子需要暂停")
         else:
-            logger.info(f"步骤4: 策略为 '{strategy}'，保留 {len(to_pause)} 个已完成的种子")
+            logger.info(f"步骤4: 策略为 '{strategy}'，保留 {len(to_pause)} 个已完成的种子继续做种")
         
         # 5. 总结
         if to_exclude:
             logger.info(f"排除分类种子: {len(to_exclude)} 个未进行任何操作")
         
+        # 统计已删除/已暂停数量
+        if strategy in ('delete', 'delete_downloading', 'pause_resume'):
+            deleted_count = len(to_delete)
+        else:
+            deleted_count = 0
+        
+        if strategy == 'pause_resume':
+            paused_count = len(to_pause)
+        elif strategy == 'pause_downloading':
+            paused_count = len(to_delete)  # 暂停的是下载中的
+        else:
+            paused_count = 0
+        
         logger.info(
             f"智能限速操作完成 - "
-            f"已删除: {len(to_delete)}, "
-            f"已暂停: {len(to_pause) if strategy == 'pause_resume' else 0}, "
-            f"已保留: {len(to_pause) if strategy == 'delete' else 0}, "
+            f"已删除: {deleted_count}, "
+            f"已暂停: {paused_count}, "
             f"已排除: {len(to_exclude)}"
         )
 

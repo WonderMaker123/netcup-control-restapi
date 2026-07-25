@@ -615,6 +615,23 @@ class NetcupTrafficMonitor:
         elif self.throttle_strategy == 'delete':
             # delete 策略: 不需要恢复(种子已被删除)
             logger.info(f"[qBittorrent] {ip} 使用delete策略,无需恢复种子")
+        elif self.throttle_strategy == 'pause_downloading':
+            # pause_downloading 策略: 恢复之前暂停的下载中种子
+            if self.qb_rss:
+                try:
+                    url, username, password = self.qb_rss.get_user_info(ip)
+                    if url and username and password:
+                        qb = QBittorrentClient(url, username, password)
+                        qb.resume_all(exclude_categories=self.exclude_categories)
+                        exclude_msg = f" (排除分类: {', '.join(self.exclude_categories)})" if self.exclude_categories else ""
+                        logger.info(f"[qBittorrent] 已恢复 {ip} 的种子下载 (pause_downloading策略){exclude_msg}")
+                    else:
+                        logger.warning(f"[qBittorrent] 无法获取 {ip} 的连接信息")
+                except Exception as e:
+                    logger.error(f"[qBittorrent] 恢复 {ip} 种子失败: {e}")
+        elif self.throttle_strategy == 'delete_downloading':
+            # delete_downloading 策略: 不需要恢复(下载中种子已被删除,已完成种子从未暂停)
+            logger.info(f"[qBittorrent] {ip} 使用delete_downloading策略,无需恢复种子")
             
 
     def disable_downloader(self, ip: str, url: str = None, username: str = None, password: str = None):
@@ -668,6 +685,25 @@ class NetcupTrafficMonitor:
                         exclude_categories=self.exclude_categories
                     )
                     logger.info(f"[qBittorrent] 删除下载中种子，暂停已完成种子 - {ip} - pause_resume策略{exclude_msg}")
+                    
+                elif self.throttle_strategy == 'pause_downloading':
+                    # 策略4: 暂停下载中的种子，已完成的不动（继续做种）
+                    qb.smart_throttle_action(
+                        strategy='pause_downloading',
+                        delete_files=self.delete_files,
+                        exclude_categories=self.exclude_categories
+                    )
+                    logger.info(f"[qBittorrent] 暂停下载中种子，已完成继续做种 - {ip} - pause_downloading策略{exclude_msg}")
+                    
+                elif self.throttle_strategy == 'delete_downloading':
+                    # 策略5: 删除下载中的种子，已完成的不动（继续做种）
+                    qb.smart_throttle_action(
+                        strategy='delete_downloading',
+                        delete_files=self.delete_files,
+                        exclude_categories=self.exclude_categories
+                    )
+                    action = "删除下载中种子(含文件)" if self.delete_files else "删除下载中种子(保留文件)"
+                    logger.info(f"[qBittorrent] {action}，已完成继续做种 - {ip} - delete_downloading策略{exclude_msg}")
                     
                 else:
                     logger.warning(f"[qBittorrent] 未知策略: {self.throttle_strategy},默认执行暂停")
