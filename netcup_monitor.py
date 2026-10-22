@@ -26,12 +26,18 @@ class NetcupTrafficMonitor:
         self.cached_data = {}
         # 限速历史记录
         self.throttle_history = self.load_throttle_history()
+        # 每日流量基准统计
+        self.daily_traffic_file = os.path.join(script_dir, 'daily_traffic.json')
+        self.daily_traffic = self.load_daily_traffic()
 
         # 加载配置
         config = self.load_config()
         self.webhook_path = config.get('webhook_path', '/webhook/secret-monitor')
         self.port = config.get('port', 56578)
         self.accounts = config.get('rest_accounts', [])
+        # 检查频率配置 (秒，默认 300，最少 30 秒)
+        self.check_interval = max(30, int(config.get('check_interval', 300)))
+        logger.info(f"[配置] 流量检查间隔: {self.check_interval} 秒")
 
         # 限速处理策略配置
         throttle_config = config.get('throttle_action', {})
@@ -90,6 +96,8 @@ class NetcupTrafficMonitor:
             # 设置命令回调函数
             self.telegram_notifier.get_status_callback = self._get_status_data
             self.telegram_notifier.get_report_callback = self.fetch_vertex_run_info
+            self.telegram_notifier.force_check_callback = self.update_cached_data
+            self.telegram_notifier.get_daily_report_callback = self.get_daily_traffic_report_text
             # 启动命令轮询
             self.telegram_notifier.start_polling()
             logger.info("[Telegram] 通知功能已启用，Bot 命令菜单已注册")
@@ -105,19 +113,29 @@ class NetcupTrafficMonitor:
         self.data_thread.start()
 
         # 启动定时任务调度器
-        if self.telegram_enabled and self.vertex_base_url:
+        if self.telegram_enabled:
             self.scheduler = BackgroundScheduler(timezone='Asia/Shanghai')
+            # 每日 23:55 自动发送今日流量统计日报
             self.scheduler.add_job(
-                func=self.send_vertex_daily_report,
+                func=self.send_daily_traffic_report,
                 trigger='cron',
-                minute=57,
-                id='vertex_daily_report'
+                hour=23,
+                minute=55,
+                id='netcup_daily_traffic_report'
             )
+            # 如果配置了 Vertex，每小时 57 分自动发送 Vertex 运行日报
+            if self.vertex_base_url:
+                self.scheduler.add_job(
+                    func=self.send_vertex_daily_report,
+                    trigger='cron',
+                    minute=57,
+                    id='vertex_daily_report'
+                )
             self.scheduler.start()
-            logger.info("[调度器] Vertex 日报任务已启动 (每小时57分执行)")
+            logger.info("[调度器] 定时任务已启动 (每日23:55发送服务器流量日报)")
         else:
             self.scheduler = None
-            logger.warning("[调度器] Telegram 或 Vertex 未配置,日报任务未启动")
+            logger.warning("[调度器] Telegram 未配置,定时日报任务未启动")
 
         logger.info("=" * 60)
         logger.info("NetcupTrafficMonitor 初始化完成")
@@ -307,6 +325,176 @@ class NetcupTrafficMonitor:
             logger.debug(f"限速历史已保存: {len(self.throttle_history)} 台服务器")
         except Exception as e:
             logger.error(f"保存限速历史失败: {e}")
+
+    def load_daily_traffic(self) -> dict:
+        """加载每日流量基准统计"""
+        today = datetime.now().strftime('%Y-%m-%d')
+        default_data = {"date": today, "servers": {}, "history": {}}
+        if not os.path.exists(self.daily_traffic_file):
+            return default_data
+        try:
+            with open(self.daily_traffic_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return default_data
+            data.setdefault("servers", {})
+            data.setdefault("history", {})
+            data.setdefault("date", today)
+            return data
+        except Exception as e:
+            logger.error(f"加载每日流量记录出错: {e}")
+            return default_data
+
+    def save_daily_traffic(self):
+        """保存每日流量基准记录（原子写入防丢）"""
+        try:
+            tmp_file = f"{self.daily_traffic_file}.tmp"
+            with open(tmp_file, 'w', encoding='utf-8') as f:
+                json.dump(self.daily_traffic, f, indent=2, ensure_ascii=False)
+            os.replace(tmp_file, self.daily_traffic_file)
+        except Exception as e:
+            logger.error(f"保存每日流量记录出错: {e}")
+
+    def update_daily_traffic(self, ip: str, rx_mib: float, tx_mib: float, server_name: str = "") -> dict:
+        """
+        更新并计算某台服务器今天的上传、下载与总流量 (TiB)
+        """
+        today = datetime.now().strftime('%Y-%m-%d')
+        
+        # 跨天重置与归档
+        current_recorded_date = self.daily_traffic.get("date")
+        if current_recorded_date != today:
+            logger.info(f"[流量统计] 跨日变更: {current_recorded_date} -> {today}，归档前一日流量并重置基准")
+            old_servers = self.daily_traffic.get("servers", {})
+            if old_servers and current_recorded_date:
+                daily_summary = {}
+                for s_ip, s_info in old_servers.items():
+                    d_rx = max(0.0, s_info.get("last_rx_mib", 0) - s_info.get("base_rx_mib", 0))
+                    d_tx = max(0.0, s_info.get("last_tx_mib", 0) - s_info.get("base_tx_mib", 0))
+                    daily_summary[s_ip] = {
+                        "name": s_info.get("server_name", s_ip),
+                        "rx_tib": round(self.bytes_to_tib(d_rx), 3),
+                        "tx_tib": round(self.bytes_to_tib(d_tx), 3),
+                        "total_tib": round(self.bytes_to_tib(d_rx + d_tx), 3)
+                    }
+                self.daily_traffic.setdefault("history", {})[current_recorded_date] = daily_summary
+                # 保留最近 30 天历史
+                if len(self.daily_traffic["history"]) > 30:
+                    oldest_keys = sorted(self.daily_traffic["history"].keys())[:-30]
+                    for k in oldest_keys:
+                        self.daily_traffic["history"].pop(k, None)
+
+            # 更新日期并将现有机器基准置为上次记录的值
+            self.daily_traffic["date"] = today
+            for s_ip in list(self.daily_traffic.get("servers", {}).keys()):
+                last_rx = self.daily_traffic["servers"][s_ip].get("last_rx_mib", rx_mib)
+                last_tx = self.daily_traffic["servers"][s_ip].get("last_tx_mib", tx_mib)
+                self.daily_traffic["servers"][s_ip]["base_rx_mib"] = last_rx
+                self.daily_traffic["servers"][s_ip]["base_tx_mib"] = last_tx
+
+        servers = self.daily_traffic.setdefault("servers", {})
+        if ip not in servers:
+            # 首次记录以当前值为初始基准
+            servers[ip] = {
+                "server_name": server_name,
+                "base_rx_mib": rx_mib,
+                "base_tx_mib": tx_mib,
+                "last_rx_mib": rx_mib,
+                "last_tx_mib": tx_mib
+            }
+        else:
+            s_data = servers[ip]
+            if server_name:
+                s_data["server_name"] = server_name
+            # 如果机房重启或网卡计数器清零，自动校准基准
+            if tx_mib < s_data.get("base_tx_mib", 0):
+                s_data["base_tx_mib"] = tx_mib
+            if rx_mib < s_data.get("base_rx_mib", 0):
+                s_data["base_rx_mib"] = rx_mib
+            s_data["last_rx_mib"] = rx_mib
+            s_data["last_tx_mib"] = tx_mib
+
+        s_data = servers[ip]
+        delta_rx_mib = max(0.0, rx_mib - s_data.get("base_rx_mib", 0))
+        delta_tx_mib = max(0.0, tx_mib - s_data.get("base_tx_mib", 0))
+        today_rx_tib = self.bytes_to_tib(delta_rx_mib)
+        today_tx_tib = self.bytes_to_tib(delta_tx_mib)
+        today_total_tib = today_rx_tib + today_tx_tib
+
+        self.save_daily_traffic()
+
+        return {
+            "today_rx_tib": round(today_rx_tib, 3),
+            "today_tx_tib": round(today_tx_tib, 3),
+            "today_traffic_tib": round(today_total_tib, 3)
+        }
+
+    def get_daily_traffic_report_text(self) -> str:
+        """获取每日流量报告文本（供 Telegram 命令与定时播报使用）"""
+        today = datetime.now().strftime('%Y-%m-%d')
+        servers = self.cached_data
+        if not servers:
+            return "📡 暂无服务器流量数据"
+
+        lines = [f"<b>📊 Netcup 今日服务器流量报告</b> (<code>{today}</code>)\n"]
+        total_today_tx = 0.0
+        total_today_rx = 0.0
+
+        for ip, s in servers.items():
+            name = s.get("server_name", ip)
+            t_tx = s.get("today_tx_tib", 0.0)
+            t_rx = s.get("today_rx_tib", 0.0)
+            t_tot = s.get("today_traffic_tib", 0.0)
+            tot_all = s.get("traffic_tib", 0.0)
+            total_today_tx += t_tx
+            total_today_rx += t_rx
+
+            lines.append(f"🖥️ <b>{name}</b> (<code>{ip}</code>)")
+            lines.append(f"  • 今日上传: <code>{t_tx:.3f} TiB</code>")
+            lines.append(f"  • 今日下载: <code>{t_rx:.3f} TiB</code>")
+            lines.append(f"  • 今日总计: <code>{t_tot:.3f} TiB</code> (累计总流量: {tot_all:.3f} TiB)\n")
+
+        total_today = total_today_tx + total_today_rx
+        lines.append("<b>📈 全服今日总计:</b>")
+        lines.append(f"↑ 上传: <code>{total_today_tx:.3f} TiB</code> | ↓ 下载: <code>{total_today_rx:.3f} TiB</code>")
+        lines.append(f"🌐 今日总流量: <b><code>{total_today:.3f} TiB</code></b>")
+        lines.append(f"\n<i>⏰ 统计时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>")
+
+        return "\n".join(lines)
+
+    def send_daily_traffic_report(self):
+        """发送每日流量报告到 Telegram"""
+        if not self.telegram_notifier:
+            return
+        try:
+            report_text = self.get_daily_traffic_report_text()
+            self.telegram_notifier.send_message(report_text)
+            logger.info("[调度器] 每日流量统计报告已推送至 Telegram")
+        except Exception as e:
+            logger.error(f"[调度器] 推送每日流量报告失败: {e}")
+
+    def save_refreshed_tokens(self, account_id: str, access_token: str, refresh_token: str):
+        """当 Token 刷新成功时，持久化写回 config.json 保证长期稳定运行"""
+        try:
+            with open(self.config_file, 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+
+            updated = False
+            for acc in cfg.get('rest_accounts', []):
+                if str(acc.get('account_id')) == str(account_id):
+                    acc['access_token'] = access_token
+                    acc['refresh_token'] = refresh_token
+                    updated = True
+                    break
+
+            if updated:
+                tmp_cfg = f"{self.config_file}.tmp"
+                with open(tmp_cfg, 'w', encoding='utf-8') as f:
+                    json.dump(cfg, f, indent=2, ensure_ascii=False)
+                os.replace(tmp_cfg, self.config_file)
+                logger.info(f"[{account_id}] 新 Token 已持久化保存至 config.json")
+        except Exception as e:
+            logger.error(f"持久化 Token 出错: {e}")
 
 
 
@@ -503,14 +691,22 @@ class NetcupTrafficMonitor:
         @self.app.route(self.webhook_path, methods=['GET', 'POST'])
         def webhook():
             try:
-                ipv4_ip = request.args.get('ipv4IP')
-                if not ipv4_ip:
-                    return jsonify({"error": "缺少ipv4IP参数"}), 400
+                ipv4_ip = request.args.get('ipv4IP') or (request.json.get('ipv4IP') if request.is_json else None)
+                logger.info(f"[Webhook] 收到外部超限通知触发, 目标IP: {ipv4_ip or '全部'}")
 
-                if ipv4_ip in self.cached_data:
-                    return jsonify(self.cached_data[ipv4_ip])
-                else:
-                    return jsonify({"error": f"未找到IP {ipv4_ip} 的信息"}), 404
+                # 异步立即执行一次全局数据刷新与限速检测（秒级响应）
+                threading.Thread(target=self.update_cached_data, daemon=True).start()
+
+                if ipv4_ip and ipv4_ip in self.cached_data:
+                    return jsonify({
+                        "success": True,
+                        "message": "Webhook 已触发即时检查与状态刷新",
+                        "server": self.cached_data[ipv4_ip]
+                    })
+                return jsonify({
+                    "success": True,
+                    "message": "Webhook 已触发全局即时检查与状态刷新"
+                })
 
             except Exception as e:
                 logger.error(f"处理webhook请求时发生错误: {e}")
@@ -638,14 +834,13 @@ class NetcupTrafficMonitor:
                     continue
 
                 try:
-                    ipv4 = api.get_server_ipv4(server_id)
-                    if not ipv4:
+                    # 单次请求获取详细信息（包含 IPv4、状态、流量接口和限速标志，避免重复发 3 次请求）
+                    server_details = api.get_server_details(str(server_id), load_live_info=True)
+                    if not server_details:
                         continue
 
-                    status = api.get_server_status(server_id)
-                    is_throttled, traffic_info = api.check_traffic_throttled(server_id)
-
-                    if is_throttled is None:
+                    ipv4, status, is_throttled, traffic_info = api.parse_server_details(server_details)
+                    if not ipv4 or is_throttled is None:
                         continue
 
                     # 转换流量为 TiB (从 MiB)
@@ -655,6 +850,9 @@ class NetcupTrafficMonitor:
                     tx_tib = self.bytes_to_tib(tx_mib)
                     total_tib = rx_tib + tx_tib
 
+                    # 每日流量统计（计算今日上传、今日下载及今日总计）
+                    daily_stat = self.update_daily_traffic(ipv4, rx_mib, tx_mib, server_name)
+
                     server_data[ipv4] = {
                         "ipv4IP": ipv4,
                         "trafficThrottled": is_throttled,
@@ -662,6 +860,9 @@ class NetcupTrafficMonitor:
                         "traffic_tib": round(total_tib, 3),
                         "rx_tib": round(rx_tib, 3),
                         "tx_tib": round(tx_tib, 3),
+                        "today_traffic_tib": daily_stat.get("today_traffic_tib", 0.0),
+                        "today_rx_tib": daily_stat.get("today_rx_tib", 0.0),
+                        "today_tx_tib": daily_stat.get("today_tx_tib", 0.0),
                         "account_id": account_config['account_id'],
                         "server_id": server_id,
                         "server_name": server_name,
@@ -670,12 +871,20 @@ class NetcupTrafficMonitor:
 
                     logger.info(
                         f"[{account_config['account_id']}] {server_name}({ipv4}) - "
-                        f"限速: {is_throttled}, 流量: {round(total_tib, 3)} TiB"
+                        f"限速: {is_throttled}, 总量: {round(total_tib, 3)} TiB, "
+                        f"今日: {daily_stat.get('today_traffic_tib', 0.0)} TiB "
+                        f"(↑{daily_stat.get('today_tx_tib', 0.0)} / ↓{daily_stat.get('today_rx_tib', 0.0)})"
                     )
 
                 except Exception as e:
                     logger.error(f"获取服务器 {server_name} 信息失败: {e}")
                     continue
+
+            # 检测 Token 刷新并在变动时持久化保存回 config.json
+            if api.access_token != account_config.get('access_token') or api.refresh_token != account_config.get('refresh_token'):
+                account_config['access_token'] = api.access_token
+                account_config['refresh_token'] = api.refresh_token
+                self.save_refreshed_tokens(account_config['account_id'], api.access_token, api.refresh_token)
 
         except Exception as e:
             logger.error(f"从账户获取服务器信息失败: {e}")
@@ -892,12 +1101,12 @@ class NetcupTrafficMonitor:
 
     def data_collection_loop(self):
         """数据收集循环"""
-        logger.info("数据收集线程已启动")
+        logger.info(f"数据收集线程已启动, 检查间隔: {self.check_interval} 秒")
         self.update_cached_data()
 
         while True:
             try:
-                time.sleep(300)
+                time.sleep(self.check_interval)
                 self.update_cached_data()
             except Exception as e:
                 logger.error(f"数据收集出错: {e}")

@@ -698,9 +698,10 @@
             
             <div class="view-switcher" style="margin-top: 15px;">
                 <button class="view-btn" onclick="sortServers('default')">🔄 默认排序</button>
-                <button class="view-btn" onclick="sortServers('traffic')">📊 总流量</button>
-                <button class="view-btn" onclick="sortServers('upload')">⬆️ 上传流量</button>
-                <button class="view-btn" onclick="sortServers('download')">⬇️ 下载流量</button>
+                <button class="view-btn" onclick="sortServers('today_traffic')">📅 今日流量</button>
+                <button class="view-btn" onclick="sortServers('traffic')">📊 累计流量</button>
+                <button class="view-btn" onclick="sortServers('upload')">⬆️ 累计上传</button>
+                <button class="view-btn" onclick="sortServers('download')">⬇️ 累计下载</button>
                 <button class="view-btn" onclick="sortServers('throttle')">🔴 限速次数</button>
                 <button class="view-btn" onclick="sortServers('status')">⚠️ 限速状态</button>
             </div>
@@ -769,6 +770,9 @@
             sortedServers = [...currentData.servers];
             
             switch(sortType) {
+                case 'today_traffic':
+                    sortedServers.sort((a, b) => (b.today_traffic_tib || 0) - (a.today_traffic_tib || 0));
+                    break;
                 case 'traffic':
                     sortedServers.sort((a, b) => b.traffic_tib - a.traffic_tib);
                     break;
@@ -808,6 +812,10 @@
                 ? ((normalCount / totalServers) * 100).toFixed(2) 
                 : 100;
 
+            const totalTodayTx = currentData.servers ? currentData.servers.reduce((sum, s) => sum + (s.today_tx_tib || 0), 0) : 0;
+            const totalTodayRx = currentData.servers ? currentData.servers.reduce((sum, s) => sum + (s.today_rx_tib || 0), 0) : 0;
+            const totalTodayTraffic = totalTodayTx + totalTodayRx;
+
             document.getElementById('stats').innerHTML = `
                 <div class="stat-card">
                     <h3>📊 总服务器</h3>
@@ -817,6 +825,11 @@
                     <h3>✅ 整体可用率</h3>
                     <div class="value">${availabilityRate}%</div>
                     <div class="subvalue">${normalCount} / ${totalServers} 在线</div>
+                </div>
+                <div class="stat-card" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);">
+                    <h3>📅 今日总流量</h3>
+                    <div class="value">${formatTraffic(totalTodayTraffic)}</div>
+                    <div class="subvalue">↑ ${formatTraffic(totalTodayTx)} / ↓ ${formatTraffic(totalTodayRx)}</div>
                 </div>
                 <div class="stat-card warning">
                     <h3>🔴 限速中</h3>
@@ -893,15 +906,27 @@
                     
                     <div class="server-info">
                         <div class="info-item">
-                            <div class="info-label">💾 总流量</div>
+                            <div class="info-label">📅 今日流量</div>
+                            <div class="info-value" style="color: #667eea; font-weight: 700;">${formatTraffic(s.today_traffic_tib || 0)}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">⬆️ 今日上传</div>
+                            <div class="info-value">${formatTraffic(s.today_tx_tib || 0)}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">⬇️ 今日下载</div>
+                            <div class="info-value">${formatTraffic(s.today_rx_tib || 0)}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">💾 累计总流量</div>
                             <div class="info-value">${formatTraffic(s.traffic_tib)}</div>
                         </div>
                         <div class="info-item">
-                            <div class="info-label">⬆️ 上传</div>
+                            <div class="info-label">⬆️ 累计上传</div>
                             <div class="info-value">${formatTraffic(s.tx_tib)}</div>
                         </div>
                         <div class="info-item">
-                            <div class="info-label">⬇️ 下载</div>
+                            <div class="info-label">⬇️ 累计下载</div>
                             <div class="info-value">${formatTraffic(s.rx_tib)}</div>
                         </div>
                         <div class="info-item">

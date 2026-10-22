@@ -17,7 +17,9 @@ class TelegramNotifier:
 
     # Bot 命令菜单定义
     BOT_COMMANDS = [
-        {"command": "status", "description": "📊 查看所有服务器状态"},
+        {"command": "status", "description": "📊 查看所有服务器状态与今日流量"},
+        {"command": "check", "description": "🔄 强制立即检测一次服务器状态"},
+        {"command": "daily", "description": "📅 查看今日服务器流量统计"},
         {"command": "report", "description": "📋 获取 Vertex 运行报告"},
         {"command": "help", "description": "❓ 帮助信息"},
     ]
@@ -36,8 +38,10 @@ class TelegramNotifier:
         self.api_url = f"{self.base_url}/sendMessage"
 
         # 数据回调函数（由外部设置，用于响应命令）
-        self.get_status_callback = None      # () -> dict
-        self.get_report_callback = None      # () -> dict
+        self.get_status_callback = None           # () -> dict
+        self.get_report_callback = None           # () -> dict
+        self.force_check_callback = None          # () -> None (触发立即刷新)
+        self.get_daily_report_callback = None     # () -> str (获取每日流量文本)
 
         # 上次处理的 update_id，用于轮询
         self._last_update_id = 0
@@ -193,6 +197,10 @@ class TelegramNotifier:
             self._cmd_help(chat_id)
         elif cmd == "/status":
             self._cmd_status(chat_id)
+        elif cmd == "/check":
+            self._cmd_check(chat_id)
+        elif cmd == "/daily":
+            self._cmd_daily(chat_id)
         elif cmd == "/report":
             self._cmd_report(chat_id)
         else:
@@ -275,14 +283,18 @@ class TelegramNotifier:
                 status_icon = "🔴" if is_throttled else "🟢"
                 name = s.get("server_name") or s.get("hostname") or "未知"
                 ip = s.get("ipv4IP", "未知IP")
-                traffic = s.get("traffic_tib", 0)
-                tx = s.get("tx_tib", 0)
-                rx = s.get("rx_tib", 0)
+                traffic = s.get("traffic_tib", 0.0)
+                tx = s.get("tx_tib", 0.0)
+                rx = s.get("rx_tib", 0.0)
+                today_total = s.get("today_traffic_tib", 0.0)
+                today_tx = s.get("today_tx_tib", 0.0)
+                today_rx = s.get("today_rx_tib", 0.0)
                 status_tag = "限速中" if is_throttled else "正常"
 
                 msg += f"{status_icon} <b>{name}</b> (<code>{ip}</code>)\n"
                 msg += f"   • 状态: <b>{status_tag}</b>\n"
-                msg += f"   • 总流量: <code>{traffic:.3f} TiB</code> (↑{tx:.3f} / ↓{rx:.3f})\n"
+                msg += f"   • 📅 <b>今日流量</b>: <code>{today_total:.3f} TiB</code> (↑{today_tx:.3f} / ↓{today_rx:.3f})\n"
+                msg += f"   • 💾 <b>总计流量</b>: <code>{traffic:.3f} TiB</code> (↑{tx:.3f} / ↓{rx:.3f})\n"
                 if is_throttled:
                     duration = s.get('current_throttle_duration', '0分钟')
                     msg += f"   • 当前限速时长: <code>{duration}</code>\n"
@@ -296,6 +308,29 @@ class TelegramNotifier:
         except Exception as e:
             logger.error(f"[Telegram] 处理 /status 命令出错: {e}")
             self.send_reply(chat_id, f"❌ 获取状态失败: {e}")
+
+    def _cmd_check(self, chat_id: str):
+        """处理 /check 命令（强制立即连接 Netcup 检测最新状态）"""
+        self.send_reply(chat_id, "🔄 正在连接 Netcup 立即检测最新服务器状态与流量，请稍候...")
+        if self.force_check_callback:
+            try:
+                self.force_check_callback()
+            except Exception as e:
+                logger.error(f"[Telegram] 强制检测执行异常: {e}")
+        # 检测完毕后返回最新状态卡片
+        self._cmd_status(chat_id)
+
+    def _cmd_daily(self, chat_id: str):
+        """处理 /daily 命令（查看今日流量简报）"""
+        if self.get_daily_report_callback:
+            try:
+                report = self.get_daily_report_callback()
+                if report:
+                    self.send_reply(chat_id, report)
+                    return
+            except Exception as e:
+                logger.error(f"[Telegram] 获取每日流量报告失败: {e}")
+        self.send_reply(chat_id, "📡 暂无今日流量报告数据，请先尝试 /status 查看状态")
 
     def _cmd_report(self, chat_id: str):
         """处理 /report 命令"""

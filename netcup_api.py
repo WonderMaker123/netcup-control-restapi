@@ -199,6 +199,54 @@ class NetcupAPI:
             logger.error(f"[{self.account_id}] 获取服务器IP异常: {e}")
             return None
 
+    def parse_server_details(self, server_details: dict) -> Tuple[Optional[str], Optional[str], Optional[bool], Dict]:
+        """
+        从单次 server_details 响应中一次性解析出:
+        (ipv4, status, is_throttled, traffic_info)
+        彻底消除针对同一服务器重复发 3 次请求的性能开销。
+        """
+        if not server_details:
+            return None, None, None, {}
+
+        # 1. 提取 IPv4 地址
+        ipv4 = None
+        ipv4_addresses = server_details.get('ipv4Addresses', [])
+        if ipv4_addresses and len(ipv4_addresses) > 0:
+            ipv4 = ipv4_addresses[0].get('ip')
+
+        # 2. 提取状态与流量信息
+        server_live_info = server_details.get('serverLiveInfo', {})
+        status = server_live_info.get('state', 'UNKNOWN')
+        interfaces = server_live_info.get('interfaces', [])
+
+        is_throttled = False
+        traffic_info = {
+            'total_rx_mib': 0,
+            'total_tx_mib': 0,
+            'interfaces': []
+        }
+
+        for interface in interfaces:
+            rx = interface.get('rxMonthlyInMiB', 0)
+            tx = interface.get('txMonthlyInMiB', 0)
+            traffic_info['total_rx_mib'] += rx
+            traffic_info['total_tx_mib'] += tx
+            if interface.get('trafficThrottled', False):
+                is_throttled = True
+            traffic_info['interfaces'].append({
+                'mac': interface.get('mac', 'unknown'),
+                'rx_mib': rx,
+                'tx_mib': tx,
+                'throttled': interface.get('trafficThrottled', False)
+            })
+
+        traffic_info['total_gb'] = round(
+            (traffic_info['total_rx_mib'] + traffic_info['total_tx_mib']) / 1024,
+            2
+        )
+
+        return ipv4, status, is_throttled, traffic_info
+
     def check_traffic_throttled(self, server_id: str) -> Tuple[Optional[bool], Dict]:
         """
         检查服务器是否被流量限速
