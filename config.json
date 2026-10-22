@@ -10,7 +10,13 @@
   ],
   "vertex": {
     "base_url": "http://你的Vertex服务器IP:3000",
-    "cookie": ""
+    "cookie": "",
+    "manage_downloader": false
+  },
+  "disk_alarm": {
+    "enabled": true,
+    "cooldown_hours": 2,
+    "thresholds_gib": [5.0, 1.0, 0.1]
   },
   "telegram": {
     "bot_token": "你的bot_token请修改",

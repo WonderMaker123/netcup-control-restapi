@@ -248,6 +248,10 @@ systemctl start netcup-monitor
 | `rest_accounts` | 是 | Netcup SCP 账户配置，`gen-token-config.py` 自动填写 |
 | `vertex.base_url` | 否 | Vertex 服务地址，**不要加 `/api/v1`**，直接写 `http://IP:3000` |
 | `vertex.cookie` | 否 | Vertex 登录 Cookie |
+| `vertex.manage_downloader` | 否 | 是否联动启停 VT 里的下载器，默认 `false`（不操作 VT 下载器）；如设为 `true` 则限速时自动暂停对应 VT 下载器，解除限速自动恢复 |
+| `disk_alarm.enabled` | 否 | 是否启用 qB 磁盘剩余空间告警，默认 `true`（低于 5GB/1GB/0GB 自动向 Telegram 发送阶梯告警） |
+| `disk_alarm.cooldown_hours` | 否 | 同级别磁盘告警冷却时间（小时），默认 `2` |
+| `check_interval` | 否 | 服务器流量检查间隔（秒），默认 `300`，最低 `30` |
 | `telegram.bot_token` | 否 | Telegram Bot Token（@BotFather 创建） |
 | `telegram.chat_id` | 否 | 接收通知的 Telegram 聊天 ID |
 | `throttle_action.strategy` | 否 | 限速策略，详见下方 [策略对比表](#策略对比表) |

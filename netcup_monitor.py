@@ -180,6 +180,7 @@ class NetcupTrafficMonitor:
                 "normal_count": sum(1 for s in servers if not s.get('trafficThrottled')),
                 "throttle_strategy": self.throttle_strategy,
                 "exclude_categories": self.exclude_categories,
+                "vertex_manage_downloader": self.vertex_manage_downloader,
                 "servers": servers
             }
         }

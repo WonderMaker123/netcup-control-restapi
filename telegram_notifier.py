@@ -267,6 +267,8 @@ class TelegramNotifier:
             exclude_cats = data.get('exclude_categories', [])
             exclude_desc = ','.join(exclude_cats) if exclude_cats else '无'
             last_update = data.get('last_update', '未知')
+            vt_manage = data.get('vertex_manage_downloader', False)
+            vt_manage_str = "已开启联动" if vt_manage else "已关闭 (不操作VT下载器)"
 
             msg = (
                 f"<b>📊 Netcup 服务器状态</b>\n\n"
@@ -274,6 +276,7 @@ class TelegramNotifier:
                 f"🟢 正常运行: <b>{normal}</b> 台\n"
                 f"🔴 限速保护: <b>{throttled}</b> 台\n"
                 f"⚙️ 策略模式: <code>{strategy_desc}</code>\n"
+                f"🔌 VT下载器控制: <code>{vt_manage_str}</code>\n"
                 f"🏷️ 排除分类: <code>{exclude_desc}</code>\n"
                 f"⏰ 更新时间: <code>{last_update}</code>\n\n"
             )
