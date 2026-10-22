@@ -338,14 +338,20 @@ class NetcupTrafficMonitor:
         if old_throttled != is_throttled:
             logger.warning(f"[历史记录] {ip} 状态变化: {old_throttled} -> {is_throttled}")
             
-            strategy_name = {
-                'pause': '暂停种子',
-                'delete': '删除种子' + ('(含文件)' if self.delete_files else '(保留文件)'),
-                'pause_resume': '暂停后恢复'
-            }.get(self.throttle_strategy, '未知策略')
+            service_desc = f" ({self.service_name})" if (self.throttle_strategy == 'service' and self.service_name) else ""
+            delete_file_desc = '(含文件)' if self.delete_files else '(保留文件)'
+            strategy_name_map = {
+                'pause': '暂停所有种子',
+                'delete': f'删除下载中种子{delete_file_desc}',
+                'pause_resume': f'删除下载中种子{delete_file_desc}，暂停已完成种子',
+                'pause_downloading': '暂停下载中种子(做种保持)',
+                'delete_downloading': f'删除下载中种子{delete_file_desc}(做种保持)',
+                'service': f'停止系统服务{service_desc}'
+            }
+            strategy_name = strategy_name_map.get(self.throttle_strategy, self.throttle_strategy or '未知策略')
             
-            # 添加排除分类信息
-            exclude_info = f" (排除: {', '.join(self.exclude_categories)})" if self.exclude_categories else ""
+            # 添加排除分类信息 (service 策略无需排除分类)
+            exclude_info = f" (排除分类: {', '.join(self.exclude_categories)})" if (self.exclude_categories and self.throttle_strategy != 'service') else ""
             
             if is_throttled:
                 # 被限速
@@ -395,6 +401,16 @@ class NetcupTrafficMonitor:
                     
                     logger.info(f"[解除限速] {server_name or ip} 限速已解除,持续了 {duration_str}")
                     
+                    # 恢复时的策略动作描述
+                    recovery_strategy_name = {
+                        'pause': '恢复所有种子下载',
+                        'delete': '无需恢复(已删除下载中)',
+                        'pause_resume': '恢复已完成种子做种',
+                        'pause_downloading': '恢复下载中种子',
+                        'delete_downloading': '无需恢复(做种保持未停)',
+                        'service': f'启动系统服务{service_desc}'
+                    }.get(self.throttle_strategy, strategy_name)
+
                     # 发送 Telegram 通知
                     if self.telegram_notifier:
                         try:
@@ -402,7 +418,7 @@ class NetcupTrafficMonitor:
                                 f"🟢 <b>限速解除</b>\n\n"
                                 f"服务器: <code>{server_name or ip}</code>\n"
                                 f"IP: <code>{ip}</code>\n\n"
-                                f"限速已解除,执行策略: <b>{strategy_name}</b>{exclude_info}\n"
+                                f"限速已解除,执行动作: <b>{recovery_strategy_name}</b>{exclude_info}\n"
                                 f"本次限速时长: <code>{duration_str}</code>\n"
                                 f"累计限速: <code>{self.format_duration(history['total_throttled_seconds'])}</code>\n"
                                 f"时间: {now.strftime('%Y-%m-%d %H:%M:%S')}"

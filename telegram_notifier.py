@@ -246,7 +246,16 @@ class TelegramNotifier:
             throttled = sum(1 for s in servers if s.get("trafficThrottled"))
             normal = total - throttled
 
-            strategy_desc = data.get('throttle_strategy', '未知')
+            strategy_raw = data.get('throttle_strategy', '未知')
+            strategy_map = {
+                'pause': '暂停所有种子 (pause)',
+                'delete': '删除下载中种子 (delete)',
+                'pause_resume': '暂停已完成/删除下载中 (pause_resume)',
+                'pause_downloading': '暂停下载中 (pause_downloading)',
+                'delete_downloading': '删除下载中 (delete_downloading)',
+                'service': '系统服务控制 (service)'
+            }
+            strategy_desc = strategy_map.get(strategy_raw, strategy_raw)
             exclude_cats = data.get('exclude_categories', [])
             exclude_desc = ','.join(exclude_cats) if exclude_cats else '无'
             last_update = data.get('last_update', '未知')
