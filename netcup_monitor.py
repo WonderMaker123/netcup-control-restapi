@@ -433,34 +433,64 @@ class NetcupTrafficMonitor:
         """获取每日流量报告文本（供 Telegram 命令与定时播报使用）"""
         today = datetime.now().strftime('%Y-%m-%d')
         servers = self.cached_data
-        if not servers:
-            return "📡 暂无服务器流量数据"
 
-        lines = [f"<b>📊 Netcup 今日服务器流量报告</b> (<code>{today}</code>)\n"]
-        total_today_tx = 0.0
-        total_today_rx = 0.0
+        # 优先使用实时缓存数据
+        if servers:
+            lines = [f"<b>📊 Netcup 今日服务器流量报告</b> (<code>{today}</code>)\n"]
+            total_today_tx = 0.0
+            total_today_rx = 0.0
 
-        for ip, s in servers.items():
-            name = s.get("server_name", ip)
-            t_tx = s.get("today_tx_tib", 0.0)
-            t_rx = s.get("today_rx_tib", 0.0)
-            t_tot = s.get("today_traffic_tib", 0.0)
-            tot_all = s.get("traffic_tib", 0.0)
-            total_today_tx += t_tx
-            total_today_rx += t_rx
+            for ip, s in servers.items():
+                name = s.get("server_name", ip)
+                t_tx = s.get("today_tx_tib", 0.0)
+                t_rx = s.get("today_rx_tib", 0.0)
+                t_tot = s.get("today_traffic_tib", 0.0)
+                tot_all = s.get("traffic_tib", 0.0)
+                total_today_tx += t_tx
+                total_today_rx += t_rx
 
-            lines.append(f"🖥️ <b>{name}</b> (<code>{ip}</code>)")
-            lines.append(f"  • 今日上传: <code>{t_tx:.3f} TiB</code>")
-            lines.append(f"  • 今日下载: <code>{t_rx:.3f} TiB</code>")
-            lines.append(f"  • 今日总计: <code>{t_tot:.3f} TiB</code> (累计总流量: {tot_all:.3f} TiB)\n")
+                lines.append(f"🖥️ <b>{name}</b> (<code>{ip}</code>)")
+                lines.append(f"  • 今日上传: <code>{t_tx:.3f} TiB</code>")
+                lines.append(f"  • 今日下载: <code>{t_rx:.3f} TiB</code>")
+                lines.append(f"  • 今日总计: <code>{t_tot:.3f} TiB</code> (累计总流量: {tot_all:.3f} TiB)\n")
 
-        total_today = total_today_tx + total_today_rx
-        lines.append("<b>📈 全服今日总计:</b>")
-        lines.append(f"↑ 上传: <code>{total_today_tx:.3f} TiB</code> | ↓ 下载: <code>{total_today_rx:.3f} TiB</code>")
-        lines.append(f"🌐 今日总流量: <b><code>{total_today:.3f} TiB</code></b>")
-        lines.append(f"\n<i>⏰ 统计时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>")
+            total_today = total_today_tx + total_today_rx
+            lines.append("<b>📈 全服今日总计:</b>")
+            lines.append(f"↑ 上传: <code>{total_today_tx:.3f} TiB</code> | ↓ 下载: <code>{total_today_rx:.3f} TiB</code>")
+            lines.append(f"🌐 今日总流量: <b><code>{total_today:.3f} TiB</code></b>")
+            lines.append(f"\n<i>⏰ 统计时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>")
+            return "\n".join(lines)
 
-        return "\n".join(lines)
+        # 缓存暂未生成时，回退从 daily_traffic.json 基准提取
+        dt_servers = self.daily_traffic.get("servers", {})
+        if dt_servers:
+            lines = [f"<b>📊 Netcup 今日服务器流量报告</b> (<code>{today}</code>)\n"]
+            total_today_tx = 0.0
+            total_today_rx = 0.0
+
+            for ip, s_info in dt_servers.items():
+                name = s_info.get("server_name", ip)
+                d_rx = max(0.0, s_info.get("last_rx_mib", 0) - s_info.get("base_rx_mib", 0))
+                d_tx = max(0.0, s_info.get("last_tx_mib", 0) - s_info.get("base_tx_mib", 0))
+                t_rx = self.bytes_to_tib(d_rx)
+                t_tx = self.bytes_to_tib(d_tx)
+                t_tot = t_rx + t_tx
+                total_today_tx += t_tx
+                total_today_rx += t_rx
+
+                lines.append(f"🖥️ <b>{name}</b> (<code>{ip}</code>)")
+                lines.append(f"  • 今日上传: <code>{t_tx:.3f} TiB</code>")
+                lines.append(f"  • 今日下载: <code>{t_rx:.3f} TiB</code>")
+                lines.append(f"  • 今日总计: <code>{t_tot:.3f} TiB</code>\n")
+
+            total_today = total_today_tx + total_today_rx
+            lines.append("<b>📈 全服今日总计:</b>")
+            lines.append(f"↑ 上传: <code>{total_today_tx:.3f} TiB</code> | ↓ 下载: <code>{total_today_rx:.3f} TiB</code>")
+            lines.append(f"🌐 今日总流量: <b><code>{total_today:.3f} TiB</code></b>")
+            lines.append(f"\n<i>⏰ 统计时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>")
+            return "\n".join(lines)
+
+        return "📡 暂无服务器流量数据，数据采集中..."
 
     def send_daily_traffic_report(self):
         """发送每日流量报告到 Telegram"""
