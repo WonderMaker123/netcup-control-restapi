@@ -488,10 +488,11 @@ class NetcupTrafficMonitor:
                     break
 
             if updated:
-                tmp_cfg = f"{self.config_file}.tmp"
-                with open(tmp_cfg, 'w', encoding='utf-8') as f:
+                # Docker bind mount 单文件不支持 os.replace，直接写回并执行 fsync 落盘
+                with open(self.config_file, 'w', encoding='utf-8') as f:
                     json.dump(cfg, f, indent=2, ensure_ascii=False)
-                os.replace(tmp_cfg, self.config_file)
+                    f.flush()
+                    os.fsync(f.fileno())
                 logger.info(f"[{account_id}] 新 Token 已持久化保存至 config.json")
         except Exception as e:
             logger.error(f"持久化 Token 出错: {e}")
