@@ -1,1 +1,6 @@
-__pycache__/\n*.pyc\nrss.log\n
+__pycache__/
+*.pyc
+*.pyo
+rss.log
+venv/
+.env

@@ -694,7 +694,13 @@ class NetcupTrafficMonitor:
             except Exception as e:
                 logger.error(f"[Vertex] 启用下载器({ip})失败: {e}")
 
-        # 2. 根据策略处理 qBittorrent 中的种子
+        # 2. 如果是 service 策略，直接启动服务
+        if self.throttle_strategy == 'service':
+            logger.info(f"[服务控制] 启用 {ip} 的下载器，启动服务 {self.service_name}")
+            self._service_control('start')
+            return
+
+        # 3. 根据策略处理 qBittorrent 中的种子
         if self.throttle_strategy == 'pause_resume':
             # pause_resume 策略: 恢复所有暂停的种子(排除指定分类)
             if self.qb_rss:
@@ -743,96 +749,94 @@ class NetcupTrafficMonitor:
         elif self.throttle_strategy == 'delete_downloading':
             # delete_downloading 策略: 不需要恢复(下载中种子已被删除,已完成种子从未暂停)
             logger.info(f"[qBittorrent] {ip} 使用delete_downloading策略,无需恢复种子")
-        elif self.throttle_strategy == 'service':
-            # service 策略: 启动服务
-            logger.info(f"[服务控制] 启用 {ip} 的下载器，启动服务 {self.service_name}")
-            self._service_control('start')
-            
+
 
     def disable_downloader(self, ip: str, url: str = None, username: str = None, password: str = None):
-            """禁用下载器并根据策略处理种子"""
-            # 1. 禁用 Vertex 下载器
-            if self.qb_rss:
-                try:
-                    r = self.qb_rss.pause_downloader(ip)
-                    logger.info(f"[Vertex] 暂停下载器({ip}): {r}")
-                except Exception as e:
-                    logger.error(f"[Vertex] 暂停下载器({ip})失败: {e}")
+        """禁用下载器并根据策略处理种子"""
+        # 1. 禁用 Vertex 下载器
+        if self.qb_rss:
+            try:
+                r = self.qb_rss.pause_downloader(ip)
+                logger.info(f"[Vertex] 暂停下载器({ip}): {r}")
+            except Exception as e:
+                logger.error(f"[Vertex] 暂停下载器({ip})失败: {e}")
 
-            # 2. 获取 qBittorrent 连接信息
-            if not (url and username and password) and self.qb_rss:
-                try:
-                    url, username, password = self.qb_rss.get_user_info(ip)
-                except Exception as e:
-                    logger.error(f"[qBittorrent] 获取 {ip} 连接信息失败: {e}")
-                    return
+        # 2. 如果是 service 策略，直接停止服务，无需 qB WebUI 凭据
+        if self.throttle_strategy == 'service':
+            exclude_msg = f" (排除分类: {', '.join(self.exclude_categories)})" if self.exclude_categories else ""
+            logger.info(f"[服务控制] 禁用 {ip} 的下载器，停止服务 {self.service_name}{exclude_msg}")
+            self._service_control('stop')
+            return
 
-            if not (url and username and password):
-                logger.warning(f"[qBittorrent] 无法获取 {ip} 的连接信息,跳过种子处理")
+        # 3. 获取 qBittorrent 连接信息（仅针对需要操作种子的策略）
+        if not (url and username and password) and self.qb_rss:
+            try:
+                url, username, password = self.qb_rss.get_user_info(ip)
+            except Exception as e:
+                logger.error(f"[qBittorrent] 获取 {ip} 连接信息失败: {e}")
                 return
 
-            # 3. 根据策略处理种子
-            try:
-                qb = QBittorrentClient(url, username, password)
-                
-                exclude_msg = f" (排除分类: {', '.join(self.exclude_categories)})" if self.exclude_categories else ""
-                
-                if self.throttle_strategy == 'pause':
-                    # 策略1: 汇报后暂停(不删除)
-                    qb.pause_all_with_reannounce(exclude_categories=self.exclude_categories)
-                    logger.info(f"[qBittorrent] 已暂停 {ip} 的种子(保留文件) - pause策略{exclude_msg}")
-                    
-                elif self.throttle_strategy == 'delete':
-                    # 策略2: 删除下载中的种子，保留已完成的种子
-                    qb.smart_throttle_action(
-                        strategy='delete',
-                        delete_files=self.delete_files,
-                        exclude_categories=self.exclude_categories
-                    )
-                    action = "删除下载中种子(含文件)" if self.delete_files else "删除下载中种子(保留文件)"
-                    logger.info(f"[qBittorrent] {action}，保留已完成种子 - {ip} - delete策略{exclude_msg}")
-                    
-                elif self.throttle_strategy == 'pause_resume':
-                    # 策略3: 删除下载中的种子，暂停已完成的种子
-                    qb.smart_throttle_action(
-                        strategy='pause_resume',
-                        delete_files=self.delete_files,
-                        exclude_categories=self.exclude_categories
-                    )
-                    logger.info(f"[qBittorrent] 删除下载中种子，暂停已完成种子 - {ip} - pause_resume策略{exclude_msg}")
-                    
-                elif self.throttle_strategy == 'pause_downloading':
-                    # 策略4: 暂停下载中的种子，已完成的不动（继续做种）
-                    qb.smart_throttle_action(
-                        strategy='pause_downloading',
-                        delete_files=self.delete_files,
-                        exclude_categories=self.exclude_categories
-                    )
-                    logger.info(f"[qBittorrent] 暂停下载中种子，已完成继续做种 - {ip} - pause_downloading策略{exclude_msg}")
-                    
-                elif self.throttle_strategy == 'delete_downloading':
-                    # 策略5: 删除下载中的种子，已完成的不动（继续做种）
-                    qb.smart_throttle_action(
-                        strategy='delete_downloading',
-                        delete_files=self.delete_files,
-                        exclude_categories=self.exclude_categories
-                    )
-                    action = "删除下载中种子(含文件)" if self.delete_files else "删除下载中种子(保留文件)"
-                    logger.info(f"[qBittorrent] {action}，已完成继续做种 - {ip} - delete_downloading策略{exclude_msg}")
-                    
-                elif self.throttle_strategy == 'service':
-                    # 策略6: 直接停止系统服务
-                    logger.info(f"[服务控制] 禁用 {ip} 的下载器，停止服务 {self.service_name}{exclude_msg}")
-                    self._service_control('stop')
-                    
-                else:
-                    logger.warning(f"[qBittorrent] 未知策略: {self.throttle_strategy},默认执行暂停")
-                    qb.pause_all_with_reannounce(exclude_categories=self.exclude_categories)
-                    
-            except Exception as e:
-                logger.error(f"[qBittorrent] 处理 {ip} 种子失败: {e}")
+        if not (url and username and password):
+            logger.warning(f"[qBittorrent] 无法获取 {ip} 的连接信息,跳过种子处理")
+            return
 
+        # 4. 根据策略处理种子
+        try:
+            qb = QBittorrentClient(url, username, password)
             
+            exclude_msg = f" (排除分类: {', '.join(self.exclude_categories)})" if self.exclude_categories else ""
+            
+            if self.throttle_strategy == 'pause':
+                # 策略1: 汇报后暂停(不删除)
+                qb.pause_all_with_reannounce(exclude_categories=self.exclude_categories)
+                logger.info(f"[qBittorrent] 已暂停 {ip} 的种子(保留文件) - pause策略{exclude_msg}")
+                
+            elif self.throttle_strategy == 'delete':
+                # 策略2: 删除下载中的种子，保留已完成的种子
+                qb.smart_throttle_action(
+                    strategy='delete',
+                    delete_files=self.delete_files,
+                    exclude_categories=self.exclude_categories
+                )
+                action = "删除下载中种子(含文件)" if self.delete_files else "删除下载中种子(保留文件)"
+                logger.info(f"[qBittorrent] {action}，保留已完成种子 - {ip} - delete策略{exclude_msg}")
+                
+            elif self.throttle_strategy == 'pause_resume':
+                # 策略3: 删除下载中的种子，暂停已完成的种子
+                qb.smart_throttle_action(
+                    strategy='pause_resume',
+                    delete_files=self.delete_files,
+                    exclude_categories=self.exclude_categories
+                )
+                logger.info(f"[qBittorrent] 删除下载中种子，暂停已完成种子 - {ip} - pause_resume策略{exclude_msg}")
+                
+            elif self.throttle_strategy == 'pause_downloading':
+                # 策略4: 暂停下载中的种子，已完成的不动（继续做种）
+                qb.smart_throttle_action(
+                    strategy='pause_downloading',
+                    delete_files=self.delete_files,
+                    exclude_categories=self.exclude_categories
+                )
+                logger.info(f"[qBittorrent] 暂停下载中种子，已完成继续做种 - {ip} - pause_downloading策略{exclude_msg}")
+                
+            elif self.throttle_strategy == 'delete_downloading':
+                # 策略5: 删除下载中的种子，已完成的不动（继续做种）
+                qb.smart_throttle_action(
+                    strategy='delete_downloading',
+                    delete_files=self.delete_files,
+                    exclude_categories=self.exclude_categories
+                )
+                action = "删除下载中种子(含文件)" if self.delete_files else "删除下载中种子(保留文件)"
+                logger.info(f"[qBittorrent] {action}，已完成继续做种 - {ip} - delete_downloading策略{exclude_msg}")
+                
+            else:
+                logger.warning(f"[qBittorrent] 未知策略: {self.throttle_strategy},默认执行暂停")
+                qb.pause_all_with_reannounce(exclude_categories=self.exclude_categories)
+                
+        except Exception as e:
+            logger.error(f"[qBittorrent] 处理 {ip} 种子失败: {e}")
+
+        
     def update_cached_data(self):
         """更新缓存的数据"""
         try:
@@ -845,44 +849,45 @@ class NetcupTrafficMonitor:
                 account_data = self.get_server_info_from_account(account)
                 new_data.update(account_data)
 
-            # 对比新旧状态
-            for ip, payload in new_data.items():
-                new_throttled = payload.get("trafficThrottled")
-                old_throttled = self.cached_data.get(ip, {}).get("trafficThrottled")
-                server_name = payload.get("server_name", "")
-
-                url, username, password = None, None, None
-                if self.qb_rss:
-                    url, username, password = self.qb_rss.get_user_info(ip)
-
-                if old_throttled is None:
-                    # 首次发现
-                    logger.info(f"[首次] {ip} ({server_name}), 限速={new_throttled}")
-                    self.update_throttle_history(ip, new_throttled, server_name)
-
-                    try:
-                        if new_throttled is False:
-                            self.enable_downloader(ip)
-                        elif new_throttled is True:
-                            self.disable_downloader(ip, url, username, password)
-                    except Exception as e:
-                        logger.error(f"[首次联动] {ip} 出错: {e}")
-
-                elif old_throttled != new_throttled:
-                    # 状态变化
-                    logger.warning(f"[状态变化] {ip}: {old_throttled} -> {new_throttled}")
-                    self.update_throttle_history(ip, new_throttled, server_name)
-
-                    try:
-                        if old_throttled is True and new_throttled is False:
-                            self.enable_downloader(ip)
-                        elif old_throttled is False and new_throttled is True:
-                            self.disable_downloader(ip, url, username, password)
-                    except Exception as e:
-                        logger.error(f"[联动] {ip} 出错: {e}")
-
+            # 核心数据先更新至缓存，确保 API 和面板展示不受后续联动影响
+            old_data = self.cached_data
             self.cached_data = new_data
             logger.info(f"数据更新成功,共 {len(self.cached_data)} 台服务器")
+
+            # 对比新旧状态并执行联动
+            for ip, payload in new_data.items():
+                try:
+                    new_throttled = payload.get("trafficThrottled")
+                    old_throttled = old_data.get(ip, {}).get("trafficThrottled")
+                    server_name = payload.get("server_name", "")
+
+                    if old_throttled is None:
+                        # 首次发现
+                        logger.info(f"[首次] {ip} ({server_name}), 限速={new_throttled}")
+                        self.update_throttle_history(ip, new_throttled, server_name)
+
+                        try:
+                            if new_throttled is False:
+                                self.enable_downloader(ip)
+                            elif new_throttled is True:
+                                self.disable_downloader(ip)
+                        except Exception as e:
+                            logger.error(f"[首次联动] {ip} 出错: {e}")
+
+                    elif old_throttled != new_throttled:
+                        # 状态变化
+                        logger.warning(f"[状态变化] {ip}: {old_throttled} -> {new_throttled}")
+                        self.update_throttle_history(ip, new_throttled, server_name)
+
+                        try:
+                            if old_throttled is True and new_throttled is False:
+                                self.enable_downloader(ip)
+                            elif old_throttled is False and new_throttled is True:
+                                self.disable_downloader(ip)
+                        except Exception as e:
+                            logger.error(f"[联动] {ip} 出错: {e}")
+                except Exception as e:
+                    logger.error(f"处理服务器 {ip} 状态异常: {e}")
 
         except Exception as e:
             logger.error(f"更新缓存数据失败: {e}")
