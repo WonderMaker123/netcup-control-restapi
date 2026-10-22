@@ -350,8 +350,8 @@ class NetcupTrafficMonitor:
             }
             strategy_name = strategy_name_map.get(self.throttle_strategy, self.throttle_strategy or '未知策略')
             
-            # 添加排除分类信息 (service 策略无需排除分类)
-            exclude_info = f" (排除分类: {', '.join(self.exclude_categories)})" if (self.exclude_categories and self.throttle_strategy != 'service') else ""
+            # 添加排除分类信息
+            exclude_info = f" (排除: {', '.join(self.exclude_categories)})" if self.exclude_categories else ""
             
             if is_throttled:
                 # 被限速
