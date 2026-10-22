@@ -504,25 +504,7 @@ class NetcupTrafficMonitor:
         def api_status():
             """返回所有服务器状态"""
             try:
-                servers = []
-                for ip, data in self.cached_data.items():
-                    # 添加可用率统计
-                    availability = self.calculate_availability(ip)
-                    enhanced_data = {**data, **availability}
-                    servers.append(enhanced_data)
-
-                return jsonify({
-                    "success": True,
-                    "data": {
-                        "last_update": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                        "total_servers": len(servers),
-                        "throttled_count": sum(1 for s in servers if s.get('trafficThrottled')),
-                        "normal_count": sum(1 for s in servers if not s.get('trafficThrottled')),
-                        "throttle_strategy": self.throttle_strategy,
-                        "exclude_categories": self.exclude_categories,
-                        "servers": servers
-                    }
-                })
+                return jsonify(self._get_status_data())
             except Exception as e:
                 logger.error(f"获取状态时发生错误: {e}")
                 return jsonify({"success": False, "error": str(e)}), 500
@@ -918,6 +900,12 @@ class NetcupTrafficMonitor:
             response.raise_for_status()
             
             return response.json()
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code == 401:
+                logger.warning("[Vertex] 获取运行信息失败: 鉴权失效 (401 Unauthorized)，Cookie 已过期")
+                return {"success": False, "error": "401 Unauthorized (Cookie已过期失效，请重新登录Vertex并更新cookie)"}
+            logger.error(f"[Vertex] 获取运行信息HTTP错误: {e}")
+            return {"success": False, "error": str(e)}
         except Exception as e:
             logger.error(f"[Vertex] 获取运行信息失败: {e}")
             return {"success": False, "error": str(e)}

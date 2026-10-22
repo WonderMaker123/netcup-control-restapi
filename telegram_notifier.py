@@ -181,6 +181,12 @@ class TelegramNotifier:
 
         logger.info(f"[Telegram] 收到命令: {cmd} (来自 {chat_id})")
 
+        # 权限校验：仅允许配置的目标 chat_id 执行命令
+        if self.chat_id and str(chat_id) != str(self.chat_id):
+            logger.warning(f"[Telegram] 拦截未授权用户 {chat_id} 的命令: {text}")
+            self.send_reply(chat_id, "⛔ 您无权使用此 Bot。")
+            return
+
         if cmd == "/start":
             self._cmd_start(chat_id)
         elif cmd == "/help":
@@ -220,8 +226,14 @@ class TelegramNotifier:
             return
 
         try:
-            data = self.get_status_callback()
-            if not data:
+            raw_data = self.get_status_callback()
+            if not raw_data:
+                self.send_reply(chat_id, "📡 暂无服务器数据")
+                return
+
+            # 兼容嵌套格式：如果包含 "data" 键则解包，否则使用本身
+            data = raw_data.get("data") if (isinstance(raw_data, dict) and "data" in raw_data) else raw_data
+            if not isinstance(data, dict):
                 self.send_reply(chat_id, "📡 暂无服务器数据")
                 return
 
@@ -234,24 +246,41 @@ class TelegramNotifier:
             throttled = sum(1 for s in servers if s.get("trafficThrottled"))
             normal = total - throttled
 
+            strategy_desc = data.get('throttle_strategy', '未知')
+            exclude_cats = data.get('exclude_categories', [])
+            exclude_desc = ','.join(exclude_cats) if exclude_cats else '无'
+            last_update = data.get('last_update', '未知')
+
             msg = (
-                f"<b>📊 服务器状态</b>\n\n"
-                f"总计: {total} 台\n"
-                f"🟢 正常: {normal} 台\n"
-                f"🔴 限速中: {throttled} 台\n"
-                f"策略: {data.get('throttle_strategy', '未知')}\n"
-                f"排除分类: {','.join(data.get('exclude_categories', [])) or '无'}\n"
-                f"更新时间: {data.get('last_update', '未知')}\n\n"
+                f"<b>📊 Netcup 服务器状态</b>\n\n"
+                f"🖥️ 总服务器: <b>{total}</b> 台\n"
+                f"🟢 正常运行: <b>{normal}</b> 台\n"
+                f"🔴 限速保护: <b>{throttled}</b> 台\n"
+                f"⚙️ 策略模式: <code>{strategy_desc}</code>\n"
+                f"🏷️ 排除分类: <code>{exclude_desc}</code>\n"
+                f"⏰ 更新时间: <code>{last_update}</code>\n\n"
             )
 
             for s in servers[:10]:  # 最多显示10台
-                status_icon = "🔴" if s.get("trafficThrottled") else "🟢"
-                name = s.get("server_name", "未知")
-                traffic = s.get("trafficUsed", "?")
-                msg += f"{status_icon} {name}\n   流量: {traffic}\n"
+                is_throttled = s.get("trafficThrottled", False)
+                status_icon = "🔴" if is_throttled else "🟢"
+                name = s.get("server_name") or s.get("hostname") or "未知"
+                ip = s.get("ipv4IP", "未知IP")
+                traffic = s.get("traffic_tib", 0)
+                tx = s.get("tx_tib", 0)
+                rx = s.get("rx_tib", 0)
+                status_tag = "限速中" if is_throttled else "正常"
+
+                msg += f"{status_icon} <b>{name}</b> (<code>{ip}</code>)\n"
+                msg += f"   • 状态: <b>{status_tag}</b>\n"
+                msg += f"   • 总流量: <code>{traffic:.3f} TiB</code> (↑{tx:.3f} / ↓{rx:.3f})\n"
+                if is_throttled:
+                    duration = s.get('current_throttle_duration', '0分钟')
+                    msg += f"   • 当前限速时长: <code>{duration}</code>\n"
+                msg += "\n"
 
             if len(servers) > 10:
-                msg += f"\n...还有 {len(servers) - 10} 台未显示"
+                msg += f"<i>...还有 {len(servers) - 10} 台未显示</i>\n"
 
             self.send_reply(chat_id, msg)
 
@@ -268,7 +297,19 @@ class TelegramNotifier:
         try:
             data = self.get_report_callback()
             if not data or not data.get("success"):
-                self.send_reply(chat_id, "❌ 获取 Vertex 报告失败")
+                err_msg = data.get("error", "未知错误") if isinstance(data, dict) else "接口未返回数据"
+                err_str = str(err_msg)
+                if "401" in err_str or "Unauthorized" in err_str or "鉴权失效" in err_str:
+                    reply_text = (
+                        "❌ <b>获取 Vertex 报告失败: 鉴权失效 (401)</b>\n\n"
+                        "🔑 原因: <code>config.json</code> 中的 Vertex Cookie 已过期失效。\n\n"
+                        "💡 解决方式: 请重新登录 Vertex 控制台，获取最新 Cookie 并更新至 <code>config.json</code> 中的 <code>vertex.cookie</code>。"
+                    )
+                elif "配置缺失" in err_str:
+                    reply_text = "⚠️ 未配置 Vertex 服务地址或 Cookie，无法生成 Vertex 运行报告。"
+                else:
+                    reply_text = f"❌ 获取 Vertex 报告失败:\n<code>{err_str}</code>"
+                self.send_reply(chat_id, reply_text)
                 return
 
             msg = self.format_vertex_report(data.get("data", {}))
