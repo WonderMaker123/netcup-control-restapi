@@ -87,6 +87,16 @@ class NetcupTrafficMonitor:
         self.telegram_bot_token = tg_config.get('bot_token', '')
         self.telegram_chat_id = tg_config.get('chat_id', '')
         self.telegram_enabled = bool(self.telegram_bot_token and self.telegram_chat_id)
+
+        # 磁盘空间告警配置 (默认阈值: 5GB, 1GB, 0.1GB; 冷却时间 2 小时)
+        disk_cfg = config.get('disk_alarm', {})
+        self.disk_alarm_enabled = disk_cfg.get('enabled', True)
+        self.disk_alarm_cooldown = int(disk_cfg.get('cooldown_hours', 2)) * 3600
+        self.disk_alarm_state = {}  # {ip: {"last_notified_level": None, "last_notified_time": 0}}
+        if self.disk_alarm_enabled:
+            logger.info(f"[配置] 磁盘空间告警: 已启用 (阶梯阈值: 5GB / 1GB / 0GB，冷却: {self.disk_alarm_cooldown // 3600}小时)")
+        else:
+            logger.info("[配置] 磁盘空间告警: 已禁用")
         
         self.telegram_notifier = None
         if self.telegram_enabled:
@@ -532,7 +542,146 @@ class NetcupTrafficMonitor:
 
 
 
-    def update_throttle_history(self, ip: str, is_throttled: bool, server_name: str = ""):
+    def get_server_disk_free(self, ip: str) -> float | None:
+        """
+        获取指定服务器的 qB 磁盘剩余空间 (GiB)
+        优先通过 qB WebUI 获取，失败时尝试通过 SSH 方式获取
+        """
+        # 途径 1: 优先通过 qBittorrent API 获取
+        if self.qb_rss:
+            try:
+                url, username, password = self.qb_rss.get_user_info(ip)
+                if url and username and password:
+                    from qbittorrentapi import Client
+                    client = Client(host=url, username=username, password=password, VERIFY_WEBUI_CERTIFICATE=False)
+                    client.auth_log_in()
+                    maindata = client.sync.maindata()
+                    free_bytes = maindata.get("server_state", {}).get("free_space_on_disk")
+                    if free_bytes is not None:
+                        return round(free_bytes / (1024 ** 3), 2)
+            except Exception as e:
+                logger.debug(f"[磁盘检测] 通过 qB API 获取 {ip} 磁盘空间失败: {e}，尝试使用系统方式")
+
+        # 途径 2: 降级通过 SSH / 本地系统执行 df 获取根分区剩余空间
+        try:
+            ssh_host = self.ssh_config.get('host', '')
+            if self._is_localhost(ssh_host) and (ip in ['127.0.0.1', 'localhost'] or not ssh_host):
+                res = subprocess.run(["df", "-PB1", "/"], capture_output=True, text=True, timeout=10)
+                if res.returncode == 0:
+                    lines = res.stdout.strip().splitlines()
+                    if len(lines) >= 2:
+                        avail_bytes = int(lines[1].split()[3])
+                        return round(avail_bytes / (1024 ** 3), 2)
+            elif ssh_host and (ssh_host == ip or not self.qb_rss):
+                ssh_cmd = [
+                    'sshpass', '-p', self.ssh_config.get('password', ''),
+                    'ssh', '-o', 'StrictHostKeyChecking=no',
+                    '-o', 'ConnectTimeout=10',
+                    '-p', str(self.ssh_config.get('port', 22)),
+                    f"{self.ssh_config['username']}@{ssh_host}",
+                    "df -PB1 /"
+                ]
+                res = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=15)
+                if res.returncode == 0:
+                    lines = res.stdout.strip().splitlines()
+                    if len(lines) >= 2:
+                        avail_bytes = int(lines[1].split()[3])
+                        return round(avail_bytes / (1024 ** 3), 2)
+        except Exception as e:
+            logger.debug(f"[磁盘检测] 通过 SSH 获取 {ip} 磁盘空间失败: {e}")
+
+        return None
+
+    def check_disk_space_alarms(self, ip: str, server_name: str, free_gib: float | None):
+        """
+        检查磁盘剩余空间并在低于 5GB / 1GB / 0GB 时发送 Telegram 智能阶梯告警
+        具备：恶化立即报警、同级别冷却防刷屏、空间恢复自动提醒通知
+        """
+        if not self.disk_alarm_enabled or not self.telegram_notifier or free_gib is None:
+            return
+
+        now = time.time()
+        state = self.disk_alarm_state.setdefault(ip, {
+            "last_notified_level": None,
+            "last_notified_time": 0
+        })
+
+        last_level = state["last_notified_level"]
+        last_time = state["last_notified_time"]
+
+        # 判定当前所处的危险级别
+        current_level = None
+        alarm_title = ""
+        alarm_desc = ""
+        level_severity = 0  # 0: 正常, 1: 5GB, 2: 1GB, 3: EMPTY
+
+        if free_gib <= 0.1:
+            current_level = "EMPTY"
+            level_severity = 3
+            alarm_title = "🛑 <b>【紧急告警】qBittorrent 磁盘已满 (0GB 剩余)！</b>"
+            alarm_desc = "磁盘空间已完全耗尽！qB 所有下载将强制中断或产生 I/O 错误，请立即清理已完成种子！"
+        elif free_gib <= 1.0:
+            current_level = "1GB"
+            level_severity = 2
+            alarm_title = "🚨 <b>【严重告警】qBittorrent 磁盘空间不足 1GB！</b>"
+            alarm_desc = "磁盘空间即将完全耗尽，处于极度危险状态，请尽快删种或腾出空间！"
+        elif free_gib <= 5.0:
+            current_level = "5GB"
+            level_severity = 1
+            alarm_title = "⚠️ <b>【空间告警】qBittorrent 磁盘剩余不足 5GB！</b>"
+            alarm_desc = "磁盘剩余空间紧张，请关注任务进度，适时清理旧数据以防写满磁盘。"
+
+        # 1. 恢复通知逻辑：若之前曾报警过，现在磁盘空间恢复到 5GB 以上
+        if current_level is None:
+            if last_level is not None:
+                logger.info(f"[磁盘告警] {server_name}({ip}) 磁盘空间已恢复正常: {free_gib:.2f} GiB")
+                try:
+                    recovery_msg = (
+                        f"🟢 <b>qBittorrent 磁盘空间已恢复正常</b>\n\n"
+                        f"🖥️ 服务器: <code>{server_name or ip}</code>\n"
+                        f"🌐 IP: <code>{ip}</code>\n"
+                        f"💽 当前可用空间: <b><code>{free_gib:.2f} GiB</code></b>\n"
+                        f"⏰ 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    )
+                    self.telegram_notifier.send_message(recovery_msg)
+                except Exception as e:
+                    logger.error(f"[Telegram] 发送磁盘恢复通知失败: {e}")
+                state["last_notified_level"] = None
+                state["last_notified_time"] = now
+            return
+
+        # 2. 告警发送判断：恶化无视冷却直接报警；同级别遵守冷却时间防刷屏
+        level_order = {"5GB": 1, "1GB": 2, "EMPTY": 3}
+        last_severity = level_order.get(last_level, 0)
+
+        should_notify = False
+        if last_level is None:
+            # 首次进入危险区间
+            should_notify = True
+        elif level_severity > last_severity:
+            # 危险级别恶化（如 5GB 恶化至 1GB 或 EMPTY），立即报警
+            should_notify = True
+        elif current_level == last_level:
+            # 同级别，超过冷却时间才再次提醒
+            if (now - last_time) >= self.disk_alarm_cooldown:
+                should_notify = True
+
+        if should_notify:
+            logger.warning(f"[磁盘告警] {server_name}({ip}) 触发磁盘空间告警 [{current_level}]: 剩余 {free_gib:.2f} GiB")
+            try:
+                msg = (
+                    f"{alarm_title}\n\n"
+                    f"🖥️ 服务器: <code>{server_name or ip}</code>\n"
+                    f"🌐 IP: <code>{ip}</code>\n"
+                    f"💽 当前剩余空间: <b><code>{free_gib:.2f} GiB</code></b>\n\n"
+                    f"💡 {alarm_desc}\n"
+                    f"⏰ 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                self.telegram_notifier.send_message(msg)
+                state["last_notified_level"] = current_level
+                state["last_notified_time"] = now
+            except Exception as e:
+                logger.error(f"[Telegram] 发送磁盘告警通知失败: {e}")
         """更新限速历史并发送 Telegram 通知"""
         now = datetime.now()
         timestamp = now.timestamp()
@@ -887,6 +1036,10 @@ class NetcupTrafficMonitor:
                     # 每日流量统计（计算今日上传、今日下载及今日总计）
                     daily_stat = self.update_daily_traffic(ipv4, rx_mib, tx_mib, server_name)
 
+                    # 检测磁盘剩余空间与智能阶梯告警
+                    free_disk_gib = self.get_server_disk_free(ipv4)
+                    self.check_disk_space_alarms(ipv4, server_name, free_disk_gib)
+
                     server_data[ipv4] = {
                         "ipv4IP": ipv4,
                         "trafficThrottled": is_throttled,
@@ -897,17 +1050,20 @@ class NetcupTrafficMonitor:
                         "today_traffic_tib": daily_stat.get("today_traffic_tib", 0.0),
                         "today_rx_tib": daily_stat.get("today_rx_tib", 0.0),
                         "today_tx_tib": daily_stat.get("today_tx_tib", 0.0),
+                        "free_disk_gib": free_disk_gib,
                         "account_id": account_config['account_id'],
                         "server_id": server_id,
                         "server_name": server_name,
                         "last_check_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     }
 
+                    disk_log_str = f", 磁盘剩余: {free_disk_gib} GiB" if free_disk_gib is not None else ""
                     logger.info(
                         f"[{account_config['account_id']}] {server_name}({ipv4}) - "
                         f"限速: {is_throttled}, 总量: {round(total_tib, 3)} TiB, "
                         f"今日: {daily_stat.get('today_traffic_tib', 0.0)} TiB "
                         f"(↑{daily_stat.get('today_tx_tib', 0.0)} / ↓{daily_stat.get('today_rx_tib', 0.0)})"
+                        f"{disk_log_str}"
                     )
 
                 except Exception as e:

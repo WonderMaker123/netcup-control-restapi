@@ -930,6 +930,10 @@
                             <div class="info-value">${formatTraffic(s.rx_tib)}</div>
                         </div>
                         <div class="info-item">
+                            <div class="info-label">💽 剩余磁盘</div>
+                            <div class="info-value" style="${(s.free_disk_gib !== undefined && s.free_disk_gib !== null && s.free_disk_gib <= 5) ? 'color: #e53e3e; font-weight: 700;' : ''}">${s.free_disk_gib !== undefined && s.free_disk_gib !== null ? s.free_disk_gib.toFixed(2) + ' GiB' : '检测中'}</div>
+                        </div>
+                        <div class="info-item">
                             <div class="info-label">🔄 状态</div>
                             <div class="info-value">${s.status}</div>
                         </div>

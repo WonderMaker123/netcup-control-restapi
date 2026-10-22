@@ -289,10 +289,24 @@ class TelegramNotifier:
                 today_total = s.get("today_traffic_tib", 0.0)
                 today_tx = s.get("today_tx_tib", 0.0)
                 today_rx = s.get("today_rx_tib", 0.0)
+                disk_gib = s.get("free_disk_gib")
                 status_tag = "限速中" if is_throttled else "正常"
+
+                if disk_gib is not None:
+                    if disk_gib <= 0.1:
+                        disk_str = f"🛑 <b>{disk_gib:.2f} GiB (已满)</b>"
+                    elif disk_gib <= 1.0:
+                        disk_str = f"🚨 <b>{disk_gib:.2f} GiB (严重不足)</b>"
+                    elif disk_gib <= 5.0:
+                        disk_str = f"⚠️ <b>{disk_gib:.2f} GiB (空间紧张)</b>"
+                    else:
+                        disk_str = f"<code>{disk_gib:.2f} GiB</code>"
+                else:
+                    disk_str = "<i>检测中</i>"
 
                 msg += f"{status_icon} <b>{name}</b> (<code>{ip}</code>)\n"
                 msg += f"   • 状态: <b>{status_tag}</b>\n"
+                msg += f"   • 💽 <b>剩余磁盘</b>: {disk_str}\n"
                 msg += f"   • 📅 <b>今日流量</b>: <code>{today_total:.3f} TiB</code> (↑{today_tx:.3f} / ↓{today_rx:.3f})\n"
                 msg += f"   • 💾 <b>总计流量</b>: <code>{traffic:.3f} TiB</code> (↑{tx:.3f} / ↓{rx:.3f})\n"
                 if is_throttled:
