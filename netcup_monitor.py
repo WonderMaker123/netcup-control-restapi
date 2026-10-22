@@ -682,6 +682,8 @@ class NetcupTrafficMonitor:
                 state["last_notified_time"] = now
             except Exception as e:
                 logger.error(f"[Telegram] 发送磁盘告警通知失败: {e}")
+
+    def update_throttle_history(self, ip: str, is_throttled: bool, server_name: str = ""):
         """更新限速历史并发送 Telegram 通知"""
         now = datetime.now()
         timestamp = now.timestamp()
