@@ -545,25 +545,10 @@ class NetcupTrafficMonitor:
 
     def get_server_disk_free(self, ip: str) -> float | None:
         """
-        获取指定服务器的 qB 磁盘剩余空间 (GiB)
-        优先通过 qB WebUI 获取，失败时尝试通过 SSH 方式获取
+        获取指定服务器的磁盘剩余空间 (GiB)
+        优先通过 Linux 原生 df 命令获取物理真实剩余，彻底不依赖任何第三方
         """
-        # 途径 1: 优先通过 qBittorrent API 获取
-        if self.qb_rss:
-            try:
-                url, username, password = self.qb_rss.get_user_info(ip)
-                if url and username and password:
-                    from qbittorrentapi import Client
-                    client = Client(host=url, username=username, password=password, VERIFY_WEBUI_CERTIFICATE=False)
-                    client.auth_log_in()
-                    maindata = client.sync.maindata()
-                    free_bytes = maindata.get("server_state", {}).get("free_space_on_disk")
-                    if free_bytes is not None:
-                        return round(free_bytes / (1024 ** 3), 2)
-            except Exception as e:
-                logger.debug(f"[磁盘检测] 通过 qB API 获取 {ip} 磁盘空间失败: {e}，尝试使用系统方式")
-
-        # 途径 2: 降级通过 SSH / 本地系统执行 df 获取根分区剩余空间
+        # 途径 1: 优先通过 SSH / 本地执行 Linux 原生 df 获取物理真实空间（最权威准确）
         try:
             ssh_host = self.ssh_config.get('host', '')
             if self._is_localhost(ssh_host) and (ip in ['127.0.0.1', 'localhost'] or not ssh_host):
@@ -590,6 +575,21 @@ class NetcupTrafficMonitor:
                         return round(avail_bytes / (1024 ** 3), 2)
         except Exception as e:
             logger.debug(f"[磁盘检测] 通过 SSH 获取 {ip} 磁盘空间失败: {e}")
+
+        # 途径 2: 备选通过 qBittorrent API 获取
+        if self.qb_rss:
+            try:
+                url, username, password = self.qb_rss.get_user_info(ip)
+                if url and username and password:
+                    from qbittorrentapi import Client
+                    client = Client(host=url, username=username, password=password, VERIFY_WEBUI_CERTIFICATE=False)
+                    client.auth_log_in()
+                    maindata = client.sync.maindata()
+                    free_bytes = maindata.get("server_state", {}).get("free_space_on_disk")
+                    if free_bytes is not None:
+                        return round(free_bytes / (1024 ** 3), 2)
+            except Exception as e:
+                logger.debug(f"[磁盘检测] 通过 qB API 获取 {ip} 磁盘空间失败: {e}")
 
         return None
 
