@@ -74,6 +74,9 @@ class NetcupTrafficMonitor:
         vconf = config.get('vertex', {})
         self.vertex_base_url = vconf.get('base_url', '')
         self.vertex_cookie = vconf.get('cookie', '')
+        # 控制是否在限速时联动启停 VT 里的下载器（默认 False，不操作 VT 下载器）
+        self.vertex_manage_downloader = bool(vconf.get('manage_downloader', False))
+        logger.info(f"[配置] Vertex 联动启停下载器: {'已启用' if self.vertex_manage_downloader else '已禁用(不操作VT下载器)'}")
 
         self.qb_rss = None
         if self.vertex_base_url:
@@ -924,8 +927,8 @@ class NetcupTrafficMonitor:
 
     def enable_downloader(self, ip: str):
         """启用下载器并根据策略恢复种子状态"""
-        # 1. 启用 Vertex 下载器
-        if self.qb_rss:
+        # 1. 启用 Vertex 下载器（受 vertex_manage_downloader 开关控制，默认不操作 VT）
+        if self.qb_rss and self.vertex_manage_downloader:
             try:
                 r = self.qb_rss.enable_downloader(ip)
                 logger.info(f"[Vertex] 启用下载器({ip}): {r}")
@@ -991,8 +994,8 @@ class NetcupTrafficMonitor:
 
     def disable_downloader(self, ip: str, url: str = None, username: str = None, password: str = None):
         """禁用下载器并根据策略处理种子"""
-        # 1. 禁用 Vertex 下载器
-        if self.qb_rss:
+        # 1. 禁用 Vertex 下载器（受 vertex_manage_downloader 开关控制，默认不操作 VT）
+        if self.qb_rss and self.vertex_manage_downloader:
             try:
                 r = self.qb_rss.pause_downloader(ip)
                 logger.info(f"[Vertex] 暂停下载器({ip}): {r}")
