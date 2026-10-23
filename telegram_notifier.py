@@ -9,7 +9,7 @@ import threading
 import time
 import requests
 from datetime import datetime
-from logger import logger
+from logger import logger, format_beijing_time
 
 
 class TelegramNotifier:
@@ -449,7 +449,7 @@ class TelegramNotifier:
                     message += f"\n\n<b>{idx}. {tracker_name}</b>"
                     message += f"\n   ↑ <code>{tracker_up_tib:.3f} TiB</code> | ↓ <code>{tracker_down_tib:.3f} TiB</code> | 比率 <code>{tracker_ratio}</code>"
 
-            message += f"\n\n<i>⏰ 统计时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>"
+            message += f"\n\n<i>⏰ 统计时间: {format_beijing_time()}</i>"
             return message
 
         except Exception as e:

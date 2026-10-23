@@ -1,9 +1,15 @@
 FROM python:3.11-slim
 
-# 安装系统依赖（sshpass + openssh-client 用于远程 SSH 控制）
+# 设置时区环境变量为北京时间
+ENV TZ=Asia/Shanghai
+
+# 安装系统依赖（sshpass + openssh-client 用于远程 SSH 控制，tzdata 配置系统时区）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     sshpass \
     openssh-client \
+    tzdata \
+    && ln -fs /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+    && echo "Asia/Shanghai" > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

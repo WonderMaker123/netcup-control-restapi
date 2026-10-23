@@ -86,6 +86,8 @@ services:
   netcupcontrol-restapi:
     image: netcup-control-restapi:latest
     container_name: netcupcontrol-restapi
+    environment:
+      - TZ=Asia/Shanghai
     ports:
       - "56578:56578"
     volumes:
@@ -93,6 +95,7 @@ services:
       - ./dashboard.html:/app/dashboard.html
       - ./daily_traffic.json:/app/daily_traffic.json
       - ./throttle_history.json:/app/throttle_history.json
+      - /etc/localtime:/etc/localtime:ro
     restart: unless-stopped
 EOF
 

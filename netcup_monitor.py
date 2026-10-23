@@ -6,7 +6,7 @@ import time
 import requests
 from datetime import datetime
 from flask import Flask, jsonify, request
-from logger import logger
+from logger import logger, BEIJING_TZ, get_beijing_now, format_beijing_time, beijing_from_timestamp
 from netcup_api import NetcupAPI
 from qb_client import QBittorrentClient
 from qb_rss import QBRSSClient
@@ -174,7 +174,7 @@ class NetcupTrafficMonitor:
         return {
             "success": True,
             "data": {
-                "last_update": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                "last_update": format_beijing_time(),
                 "total_servers": len(servers),
                 "throttled_count": sum(1 for s in servers if s.get('trafficThrottled')),
                 "normal_count": sum(1 for s in servers if not s.get('trafficThrottled')),
@@ -342,7 +342,7 @@ class NetcupTrafficMonitor:
 
     def load_daily_traffic(self) -> dict:
         """加载每日流量基准统计"""
-        today = datetime.now().strftime('%Y-%m-%d')
+        today = format_beijing_time(fmt='%Y-%m-%d')
         default_data = {"date": today, "servers": {}, "history": {}}
         if not os.path.exists(self.daily_traffic_file):
             return default_data
@@ -373,7 +373,7 @@ class NetcupTrafficMonitor:
         """
         更新并计算某台服务器今天的上传、下载与总流量 (TiB)
         """
-        today = datetime.now().strftime('%Y-%m-%d')
+        today = format_beijing_time(fmt='%Y-%m-%d')
         
         # 跨天重置与归档
         current_recorded_date = self.daily_traffic.get("date")
@@ -445,7 +445,7 @@ class NetcupTrafficMonitor:
 
     def get_daily_traffic_report_text(self) -> str:
         """获取每日流量报告文本（供 Telegram 命令与定时播报使用）"""
-        today = datetime.now().strftime('%Y-%m-%d')
+        today = format_beijing_time(fmt='%Y-%m-%d')
         servers = self.cached_data
 
         # 优先使用实时缓存数据
@@ -472,7 +472,7 @@ class NetcupTrafficMonitor:
             lines.append("<b>📈 全服今日总计:</b>")
             lines.append(f"↑ 上传: <code>{total_today_tx:.3f} TiB</code> | ↓ 下载: <code>{total_today_rx:.3f} TiB</code>")
             lines.append(f"🌐 今日总流量: <b><code>{total_today:.3f} TiB</code></b>")
-            lines.append(f"\n<i>⏰ 统计时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>")
+            lines.append(f"\n<i>⏰ 统计时间: {format_beijing_time()}</i>")
             return "\n".join(lines)
 
         # 缓存暂未生成时，回退从 daily_traffic.json 基准提取
@@ -501,7 +501,7 @@ class NetcupTrafficMonitor:
             lines.append("<b>📈 全服今日总计:</b>")
             lines.append(f"↑ 上传: <code>{total_today_tx:.3f} TiB</code> | ↓ 下载: <code>{total_today_rx:.3f} TiB</code>")
             lines.append(f"🌐 今日总流量: <b><code>{total_today:.3f} TiB</code></b>")
-            lines.append(f"\n<i>⏰ 统计时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</i>")
+            lines.append(f"\n<i>⏰ 统计时间: {format_beijing_time()}</i>")
             return "\n".join(lines)
 
         return "📡 暂无服务器流量数据，数据采集中..."
@@ -642,7 +642,7 @@ class NetcupTrafficMonitor:
                         f"🖥️ 服务器: <code>{server_name or ip}</code>\n"
                         f"🌐 IP: <code>{ip}</code>\n"
                         f"💽 当前可用空间: <b><code>{free_gib:.2f} GiB</code></b>\n"
-                        f"⏰ 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                        f"⏰ 时间: {format_beijing_time()}"
                     )
                     self.telegram_notifier.send_message(recovery_msg)
                 except Exception as e:
@@ -676,7 +676,7 @@ class NetcupTrafficMonitor:
                     f"🌐 IP: <code>{ip}</code>\n"
                     f"💽 当前剩余空间: <b><code>{free_gib:.2f} GiB</code></b>\n\n"
                     f"💡 {alarm_desc}\n"
-                    f"⏰ 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    f"⏰ 时间: {format_beijing_time()}"
                 )
                 self.telegram_notifier.send_message(msg)
                 state["last_notified_level"] = current_level
@@ -686,7 +686,7 @@ class NetcupTrafficMonitor:
 
     def update_throttle_history(self, ip: str, is_throttled: bool, server_name: str = ""):
         """更新限速历史并发送 Telegram 通知"""
-        now = datetime.now()
+        now = get_beijing_now()
         timestamp = now.timestamp()
         
         if ip not in self.throttle_history:
@@ -839,7 +839,7 @@ class NetcupTrafficMonitor:
             }
         
         history = self.throttle_history[ip]
-        now = datetime.now().timestamp()
+        now = time.time()
         
         # 计算当前限速持续时间
         current_throttle_duration = 0
@@ -861,8 +861,8 @@ class NetcupTrafficMonitor:
         return {
             "throttle_count": history.get("throttle_count", 0),
             "total_throttled_time": format_hours(total_throttled),
-            "last_throttle_time": datetime.fromtimestamp(history["last_throttle_time"]).strftime('%Y-%m-%d %H:%M:%S') if history.get("last_throttle_time") else None,
-            "last_unthrottle_time": datetime.fromtimestamp(history["last_unthrottle_time"]).strftime('%Y-%m-%d %H:%M:%S') if history.get("last_unthrottle_time") else None,
+            "last_throttle_time": beijing_from_timestamp(history.get("last_throttle_time")),
+            "last_unthrottle_time": beijing_from_timestamp(history.get("last_unthrottle_time")),
             "current_throttle_duration": format_hours(current_throttle_duration) if current_throttle_duration > 0 else "0分钟",
             "history": history.get("history", [])
         }
@@ -1057,7 +1057,7 @@ class NetcupTrafficMonitor:
                         "account_id": account_config['account_id'],
                         "server_id": server_id,
                         "server_name": server_name,
-                        "last_check_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        "last_check_time": format_beijing_time()
                     }
 
                     disk_log_str = f", 磁盘剩余: {free_disk_gib} GiB" if free_disk_gib is not None else ""
