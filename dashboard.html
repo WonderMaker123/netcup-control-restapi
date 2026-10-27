@@ -786,6 +786,86 @@
             margin-top: 2px;
         }
 
+        /* 每日限速与正常运行时间走势图专用样式 */
+        .uptime-chart-wrapper {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding: 10px 0;
+        }
+        .uptime-row {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 6px 0;
+        }
+        .uptime-date {
+            width: 110px;
+            font-size: 13px;
+            font-weight: 600;
+            color: #475569;
+            flex-shrink: 0;
+        }
+        .uptime-track {
+            flex: 1;
+            height: 24px;
+            background: #f1f5f9;
+            border-radius: 12px;
+            overflow: hidden;
+            display: flex;
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.06);
+        }
+        .uptime-bar-normal {
+            background: linear-gradient(90deg, #10b981 0%, #34d399 100%);
+            height: 100%;
+            transition: width 0.4s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 11px;
+            font-weight: 700;
+            overflow: hidden;
+            white-space: nowrap;
+        }
+        .uptime-bar-throttled {
+            background: linear-gradient(90deg, #f87171 0%, #ef4444 100%);
+            height: 100%;
+            transition: width 0.4s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 11px;
+            font-weight: 700;
+            overflow: hidden;
+            white-space: nowrap;
+        }
+        .uptime-summary-text {
+            width: 250px;
+            font-size: 12px;
+            color: #334155;
+            text-align: right;
+            flex-shrink: 0;
+        }
+        .legend-group {
+            display: flex;
+            gap: 20px;
+            font-size: 13px;
+            margin-bottom: 15px;
+            font-weight: 600;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .legend-dot {
+            width: 14px;
+            height: 14px;
+            border-radius: 4px;
+        }
+
         .loading {
             text-align: center;
             padding: 60px;
@@ -1091,6 +1171,7 @@
             const recentDays = d.recent_days || [];
             const months = d.monthly_history || [];
             const timeline = d.throttle_timeline || [];
+            const uptimeList = d.daily_uptime || [];
 
             // 波动显示
             let diffTag = '<span class="fluctuation-tag flat">持平 ➖</span>';
@@ -1122,6 +1203,54 @@
                     </div>
                 `;
             }).join('');
+
+            // 每日限速与正常时间对比图表生成
+            let uptimeChartHtml = uptimeList.map(u => {
+                const normWidth = Math.max(0, u.normal_pct || 0);
+                const thrWidth = Math.max(0, u.throttled_pct || 0);
+                const isToday = u.is_today;
+                const dateLabel = isToday ? `<b>${u.date.slice(5)} (今天)</b>` : `${u.date.slice(5)} (${u.weekday})`;
+
+                return `
+                    <div class="uptime-row" style="${isToday ? 'background: #f8fafc; border-radius: 8px; padding: 6px 8px;' : ''}">
+                        <div class="uptime-date" style="${isToday ? 'color: #667eea; font-weight: 700;' : ''}">${dateLabel}</div>
+                        <div class="uptime-track" title="${u.date} (${u.weekday})\n正常运行: ${u.normal_str} (${u.normal_pct}%)\n限速保护: ${u.throttled_str} (${u.throttled_pct}%)\n触发限速: ${u.throttle_count}次">
+                            <div class="uptime-bar-normal" style="width: ${normWidth}%;">
+                                ${normWidth >= 18 ? u.normal_str : ''}
+                            </div>
+                            <div class="uptime-bar-throttled" style="width: ${thrWidth}%;">
+                                ${thrWidth >= 18 ? u.throttled_str : ''}
+                            </div>
+                        </div>
+                        <div class="uptime-summary-text">
+                            ${u.throttled_seconds > 0 ? `<span style="color:#ef4444; font-weight:700;">🔴 限速 ${u.throttled_str}</span>` : '<span style="color:#10b981; font-weight:700;">🟢 全天正常</span>'}
+                            <span style="color:#64748b; font-size:11px; margin-left: 6px;">(正常率: ${u.normal_pct}%)</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            // 每日限速表格行
+            let uptimeTableRowsHtml = uptimeList.slice().reverse().map(u => `
+                <tr style="${u.is_today ? 'background: #f0fdf4; font-weight: 700;' : ''}">
+                    <td style="padding: 10px 14px; border-bottom: 1px solid #edf2f7;">
+                        ${u.date} <span style="color:#64748b; font-size:12px;">(${u.weekday})</span>
+                        ${u.is_today ? '<span style="color:#16a34a; font-size:11px; margin-left:4px;">[今天]</span>' : ''}
+                    </td>
+                    <td style="padding: 10px 14px; border-bottom: 1px solid #edf2f7; color: #16a34a; font-weight: 600;">
+                        🟢 ${u.normal_str}
+                    </td>
+                    <td style="padding: 10px 14px; border-bottom: 1px solid #edf2f7; color: ${u.throttled_seconds > 0 ? '#ef4444' : '#64748b'}; font-weight: 700;">
+                        ${u.throttled_seconds > 0 ? `🔴 ${u.throttled_str}` : '0分钟'}
+                    </td>
+                    <td style="padding: 10px 14px; border-bottom: 1px solid #edf2f7; color: #475569;">
+                        ${u.throttle_count} 次
+                    </td>
+                    <td style="padding: 10px 14px; border-bottom: 1px solid #edf2f7; font-weight: 800; color: ${u.normal_pct >= 90 ? '#16a34a' : (u.normal_pct >= 60 ? '#f59e0b' : '#ef4444')};">
+                        ${u.normal_pct}%
+                    </td>
+                </tr>
+            `).join('');
 
             // 月度表格
             let monthlyRowsHtml = months.map(m => `
@@ -1201,7 +1330,45 @@
                     </div>
                 </div>
 
-                <!-- 模块 3: 每月流量永久历史记录 (不怕机房重置) -->
+                <!-- 模块 3: 每日限速时间与正常运行时间统计图表 -->
+                <div class="report-card">
+                    <h2>⏱️ 最近 14 天每日限速与正常运行时间走势图 (每日限速时间分布)</h2>
+                    
+                    <div class="legend-group">
+                        <div class="legend-item">
+                            <div class="legend-dot" style="background: #10b981;"></div>
+                            <span>🟢 正常运行时间 (Normal Uptime)</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-dot" style="background: #ef4444;"></div>
+                            <span>🔴 限速保护时间 (Throttled Time)</span>
+                        </div>
+                    </div>
+
+                    <div class="uptime-chart-wrapper">
+                        ${uptimeChartHtml}
+                    </div>
+
+                    <!-- 每日限速明细表格 -->
+                    <div style="margin-top: 20px; overflow-x: auto;">
+                        <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13px;">
+                            <thead>
+                                <tr style="background: #f8fafc; color: #475569; font-weight: 700;">
+                                    <th style="padding: 10px 14px;">日期</th>
+                                    <th style="padding: 10px 14px;">正常运行时间</th>
+                                    <th style="padding: 10px 14px;">被限速时长</th>
+                                    <th style="padding: 10px 14px;">触发限速次数</th>
+                                    <th style="padding: 10px 14px;">全天可用率</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${uptimeTableRowsHtml}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- 模块 4: 每月流量永久历史记录 (不怕机房重置) -->
                 <div class="report-card">
                     <h2>🗓️ 每月流量永久账单 (自动归档，机房重置后依然永久保存)</h2>
                     <div style="overflow-x: auto;">

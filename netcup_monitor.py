@@ -507,6 +507,108 @@ class NetcupTrafficMonitor:
         if month_summary:
             months[target_month] = month_summary
 
+    def calculate_daily_uptime_stats(self, days: int = 14) -> list:
+        """
+        精确计算最近 N 天（默认 14 天）中，每天被限速的具体时长与正常运行时间对比
+        支持按天切分跨天限速区间，计算每日限速百分比与可用率百分比
+        """
+        now_dt = get_beijing_now()
+        now_ts = now_dt.timestamp()
+
+        # 收集每台服务器的所有限速区间: [(t_start, t_end)]
+        server_intervals = {}
+        for ip, s_info in self.throttle_history.items():
+            events = s_info.get("history", [])
+            intervals = []
+            curr_start = None
+            for ev in events:
+                if ev.get("event") == "throttled":
+                    curr_start = ev.get("timestamp")
+                elif ev.get("event") == "unthrottled":
+                    if curr_start is not None:
+                        intervals.append((curr_start, ev.get("timestamp")))
+                        curr_start = None
+                    elif ev.get("duration_seconds") and ev.get("timestamp"):
+                        intervals.append((ev.get("timestamp") - ev.get("duration_seconds"), ev.get("timestamp")))
+
+            if s_info.get("current_throttled") and s_info.get("last_throttle_time"):
+                intervals.append((s_info.get("last_throttle_time"), now_ts))
+
+            server_intervals[ip] = {
+                "name": s_info.get("server_name", ip),
+                "intervals": intervals
+            }
+
+        daily_stats = []
+        for i in range(days - 1, -1, -1):
+            d_dt = now_dt - timedelta(days=i)
+            d_str = d_dt.strftime('%Y-%m-%d')
+            weekday_cn = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][d_dt.weekday()]
+            
+            day_start = datetime.strptime(d_str, "%Y-%m-%d").replace(tzinfo=BEIJING_TZ).timestamp()
+            day_end = day_start + 86400
+            effective_end = min(day_end, now_ts)
+            day_span_seconds = max(1, int(effective_end - day_start))
+
+            # 汇总当天所有服务器的最大/合并限速时长
+            # 针对单机或多机分别计算
+            servers_day_detail = {}
+            day_max_thr_sec = 0.0
+            day_total_thr_count = 0
+
+            for ip, s_data in server_intervals.items():
+                s_thr_sec = 0.0
+                s_thr_count = 0
+                for t_start, t_end in s_data["intervals"]:
+                    overlap = max(0.0, min(t_end, effective_end) - max(t_start, day_start))
+                    if overlap > 0:
+                        s_thr_sec += overlap
+                        if day_start <= t_start < effective_end:
+                            s_thr_count += 1
+
+                s_thr_sec = min(float(day_span_seconds), s_thr_sec)
+                s_norm_sec = day_span_seconds - s_thr_sec
+                s_thr_hours = s_thr_sec / 3600
+                s_norm_hours = s_norm_sec / 3600
+
+                servers_day_detail[ip] = {
+                    "name": s_data["name"],
+                    "throttled_seconds": int(s_thr_sec),
+                    "normal_seconds": int(s_norm_sec),
+                    "throttled_str": f"{s_thr_hours:.1f}小时" if s_thr_hours >= 1 else f"{int(s_thr_sec // 60)}分钟",
+                    "normal_str": f"{s_norm_hours:.1f}小时" if s_norm_hours >= 1 else f"{int(s_norm_sec // 60)}分钟",
+                    "throttled_pct": round((s_thr_sec / day_span_seconds) * 100, 1),
+                    "normal_pct": round((s_norm_sec / day_span_seconds) * 100, 1),
+                    "throttle_count": s_thr_count
+                }
+
+                if s_thr_sec > day_max_thr_sec:
+                    day_max_thr_sec = s_thr_sec
+                day_total_thr_count += s_thr_count
+
+            # 若未配置服务器则默认 0
+            main_thr_sec = day_max_thr_sec if server_intervals else 0.0
+            main_norm_sec = day_span_seconds - main_thr_sec
+            thr_hours = main_thr_sec / 3600
+            norm_hours = main_norm_sec / 3600
+
+            daily_stats.append({
+                "date": d_str,
+                "weekday": weekday_cn,
+                "is_today": (d_str == now_dt.strftime('%Y-%m-%d')),
+                "total_seconds": day_span_seconds,
+                "throttled_seconds": int(main_thr_sec),
+                "normal_seconds": int(main_norm_sec),
+                "throttled_str": f"{thr_hours:.1f}小时" if thr_hours >= 1 else f"{int(main_thr_sec // 60)}分钟",
+                "normal_str": f"{norm_hours:.1f}小时" if norm_hours >= 1 else f"{int(main_norm_sec // 60)}分钟",
+                "throttled_pct": round((main_thr_sec / day_span_seconds) * 100, 1),
+                "normal_pct": round((main_norm_sec / day_span_seconds) * 100, 1),
+                "throttle_count": day_total_thr_count,
+                "servers": servers_day_detail
+            })
+
+        return daily_stats
+
     def get_analytics_summary(self) -> dict:
         """
         计算全维度的流量与限速分析报表数据：
@@ -684,6 +786,9 @@ class NetcupTrafficMonitor:
         # 按时间倒序排序限速事件
         all_throttle_events.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
 
+        # 计算最近 14 天每日限速与正常运行时间对比数据
+        daily_uptime = self.calculate_daily_uptime_stats(days=14)
+
         return {
             "success": True,
             "generated_at": format_beijing_time(),
@@ -721,7 +826,8 @@ class NetcupTrafficMonitor:
             "recent_days": recent_days,
             "monthly_history": monthly_history,
             "throttle_summary": throttle_summary,
-            "throttle_timeline": all_throttle_events[:30]  # 最新30条限速事件
+            "throttle_timeline": all_throttle_events[:30],  # 最新30条限速事件
+            "daily_uptime": daily_uptime  # 每日限速时长与正常时间对比
         }
 
     def get_full_analytics_report_text(self) -> str:
@@ -784,6 +890,16 @@ class NetcupTrafficMonitor:
             stat_desc = f"限速中 (已持续 {ts['current_duration']})" if ts["current_throttled"] else "正常"
             lines.append(f"• {ts['name']}: {stat_desc}，累计限速: <code>{ts['total_throttled_time']}</code> ({ts['throttle_count']}次)")
 
+        # 每日限速时长简述 (今日 & 昨日)
+        uptime_list = data.get("daily_uptime", [])
+        if uptime_list:
+            today_u = uptime_list[-1]
+            lines.append(f"\n<b>⏱️ 每日限速时间统计:</b>")
+            lines.append(f"• 今日被限速: <b><code>{today_u['throttled_str']}</code></b> (正常: {today_u['normal_str']}，正常率: {today_u['normal_pct']}%)")
+            if len(uptime_list) >= 2:
+                yest_u = uptime_list[-2]
+                lines.append(f"• 昨日被限速: <code>{yest_u['throttled_str']}</code> (正常: {yest_u['normal_str']}，正常率: {yest_u['normal_pct']}%)")
+
         # 列出最近 3 次具体的被限速时间段
         recent_thrs = []
         for ev in timeline:
@@ -796,7 +912,7 @@ class NetcupTrafficMonitor:
                 break
 
         if recent_thrs:
-            lines.append("\n<b>⏱️ 最近限速记录:</b>")
+            lines.append("\n<b>📋 最近限速事件:</b>")
             lines.extend(recent_thrs)
 
         lines.append(f"\n<i>⏰ 统计时间: {data['generated_at']}</i>")
@@ -815,6 +931,15 @@ class NetcupTrafficMonitor:
             lines.append(f"• 当前状态: {cur_tag}")
             lines.append(f"• 累计限速时长: <code>{ts['total_throttled_time']}</code>")
             lines.append(f"• 累计限速次数: <b>{ts['throttle_count']}</b> 次\n")
+
+        # 增加最近 7 天每日限速走势列表
+        uptime_list = data.get("daily_uptime", [])
+        if uptime_list:
+            lines.append("<b>📊 最近 7 天每日被限速时长走势:</b>")
+            for u in uptime_list[-7:]:
+                tag = "(今天)" if u.get("is_today") else f"({u.get('weekday')})"
+                lines.append(f"• <code>{u['date']}</code> {tag}: 🔴 限速 <b>{u['throttled_str']}</b> | 🟢 正常 {u['normal_str']} (正常率: {u['normal_pct']}%)")
+            lines.append("")
 
         if not timeline:
             lines.append("✨ 暂无任何限速历史记录，服务运行良好！")
