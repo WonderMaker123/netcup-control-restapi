@@ -4,7 +4,7 @@ import subprocess
 import threading
 import time
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, jsonify, request
 from logger import logger, BEIJING_TZ, get_beijing_now, format_beijing_time, beijing_from_timestamp
 from netcup_api import NetcupAPI
@@ -521,24 +521,42 @@ class NetcupTrafficMonitor:
         yesterday_str = (now_dt - timedelta(days=1)).strftime('%Y-%m-%d')
         current_month_str = now_dt.strftime('%Y-%m')
 
-        # 1. 今日实时数据汇总
+        # 1. 今日实时数据汇总 (优先从实时缓存获取，未生成时从持久化基准计算)
         today_tx = 0.0
         today_rx = 0.0
         servers_today = {}
-        for ip, s in self.cached_data.items():
-            tx = s.get("today_tx_tib", 0.0)
-            rx = s.get("today_rx_tib", 0.0)
-            tot = s.get("today_traffic_tib", 0.0)
-            today_tx += tx
-            today_rx += rx
-            servers_today[ip] = {
-                "name": s.get("server_name", ip),
-                "tx_tib": round(tx, 3),
-                "rx_tib": round(rx, 3),
-                "total_tib": round(tot, 3),
-                "disk_free_gib": s.get("free_disk_gib"),
-                "throttled": s.get("trafficThrottled", False)
-            }
+        if self.cached_data:
+            for ip, s in self.cached_data.items():
+                tx = s.get("today_tx_tib", 0.0)
+                rx = s.get("today_rx_tib", 0.0)
+                tot = s.get("today_traffic_tib", 0.0)
+                today_tx += tx
+                today_rx += rx
+                servers_today[ip] = {
+                    "name": s.get("server_name", ip),
+                    "tx_tib": round(tx, 3),
+                    "rx_tib": round(rx, 3),
+                    "total_tib": round(tot, 3),
+                    "disk_free_gib": s.get("free_disk_gib"),
+                    "throttled": s.get("trafficThrottled", False)
+                }
+        else:
+            for ip, s_info in self.daily_traffic.get("servers", {}).items():
+                d_rx = max(0.0, s_info.get("last_rx_mib", 0) - s_info.get("base_rx_mib", 0))
+                d_tx = max(0.0, s_info.get("last_tx_mib", 0) - s_info.get("base_tx_mib", 0))
+                rx = self.bytes_to_tib(d_rx)
+                tx = self.bytes_to_tib(d_tx)
+                tot = rx + tx
+                today_tx += tx
+                today_rx += rx
+                servers_today[ip] = {
+                    "name": s_info.get("server_name", ip),
+                    "tx_tib": round(tx, 3),
+                    "rx_tib": round(rx, 3),
+                    "total_tib": round(tot, 3),
+                    "disk_free_gib": None,
+                    "throttled": False
+                }
         today_total = today_tx + today_rx
 
         # 2. 昨日数据汇总
