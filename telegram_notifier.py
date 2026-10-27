@@ -17,10 +17,11 @@ class TelegramNotifier:
 
     # Bot 命令菜单定义
     BOT_COMMANDS = [
-        {"command": "status", "description": "📊 查看所有服务器状态与今日流量"},
-        {"command": "check", "description": "🔄 强制立即检测一次服务器状态"},
-        {"command": "daily", "description": "📅 查看今日服务器流量统计"},
-        {"command": "report", "description": "📋 获取 Vertex 运行报告"},
+        {"command": "status", "description": "📊 查看所有服务器状态与实时数据"},
+        {"command": "report", "description": "📈 查看流量综合分析报表(波动/周/月/限速)"},
+        {"command": "history", "description": "🛑 查看详细被限速时间轴记录"},
+        {"command": "check", "description": "🔄 强制立即连接Netcup刷新一次"},
+        {"command": "daily", "description": "📅 查看今日流量统计简报"},
         {"command": "help", "description": "❓ 帮助信息"},
     ]
 
@@ -39,9 +40,10 @@ class TelegramNotifier:
 
         # 数据回调函数（由外部设置，用于响应命令）
         self.get_status_callback = None           # () -> dict
-        self.get_report_callback = None           # () -> dict
+        self.get_report_callback = None           # () -> str (综合分析报表文本)
         self.force_check_callback = None          # () -> None (触发立即刷新)
         self.get_daily_report_callback = None     # () -> str (获取每日流量文本)
+        self.get_history_callback = None          # () -> str (获取限速时间轴文本)
 
         # 上次处理的 update_id，用于轮询
         self._last_update_id = 0
@@ -201,6 +203,8 @@ class TelegramNotifier:
             self._cmd_check(chat_id)
         elif cmd == "/daily":
             self._cmd_daily(chat_id)
+        elif cmd == "/history":
+            self._cmd_history(chat_id)
         elif cmd == "/report":
             self._cmd_report(chat_id)
         else:
@@ -350,35 +354,41 @@ class TelegramNotifier:
         self.send_reply(chat_id, "📡 暂无今日流量报告数据，请先尝试 /status 查看状态")
 
     def _cmd_report(self, chat_id: str):
-        """处理 /report 命令"""
+        """处理 /report 命令（官方真实多维报表：每日波动/周统计/月历史/限速记录）"""
         if not self.get_report_callback:
-            self.send_reply(chat_id, "❌ 报告数据获取函数未注册")
+            self.send_reply(chat_id, "❌ 报表生成函数未注册")
             return
 
         try:
-            data = self.get_report_callback()
-            if not data or not data.get("success"):
-                err_msg = data.get("error", "未知错误") if isinstance(data, dict) else "接口未返回数据"
-                err_str = str(err_msg)
-                if "401" in err_str or "Unauthorized" in err_str or "鉴权失效" in err_str:
-                    reply_text = (
-                        "❌ <b>获取 Vertex 报告失败: 鉴权失效 (401)</b>\n\n"
-                        "🔑 原因: <code>config.json</code> 中的 Vertex Cookie 已过期失效。\n\n"
-                        "💡 解决方式: 请重新登录 Vertex 控制台，获取最新 Cookie 并更新至 <code>config.json</code> 中的 <code>vertex.cookie</code>。"
-                    )
-                elif "配置缺失" in err_str:
-                    reply_text = "⚠️ 未配置 Vertex 服务地址或 Cookie，无法生成 Vertex 运行报告。"
-                else:
-                    reply_text = f"❌ 获取 Vertex 报告失败:\n<code>{err_str}</code>"
-                self.send_reply(chat_id, reply_text)
+            report_content = self.get_report_callback()
+            if isinstance(report_content, str):
+                self.send_reply(chat_id, report_content)
                 return
-
-            msg = self.format_vertex_report(data.get("data", {}))
-            self.send_reply(chat_id, msg)
-
+            elif isinstance(report_content, dict):
+                # 兼容字典格式返回
+                msg = self.format_vertex_report(report_content.get("data", {}))
+                self.send_reply(chat_id, msg)
+                return
+            self.send_reply(chat_id, "📡 暂无报表数据")
         except Exception as e:
             logger.error(f"[Telegram] 处理 /report 命令出错: {e}")
-            self.send_reply(chat_id, f"❌ 获取报告失败: {e}")
+            self.send_reply(chat_id, f"❌ 获取分析报表失败: {e}")
+
+    def _cmd_history(self, chat_id: str):
+        """处理 /history 命令（查看限速时间明细与事件轴）"""
+        if not self.get_history_callback:
+            self.send_reply(chat_id, "❌ 限速历史函数未注册")
+            return
+
+        try:
+            timeline_text = self.get_history_callback()
+            if timeline_text:
+                self.send_reply(chat_id, timeline_text)
+                return
+            self.send_reply(chat_id, "✨ 暂无限速历史记录")
+        except Exception as e:
+            logger.error(f"[Telegram] 处理 /history 命令出错: {e}")
+            self.send_reply(chat_id, f"❌ 获取限速历史失败: {e}")
 
     # ──────────────────────────────────────────
     # 报告格式化（保持原有逻辑）

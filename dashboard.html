@@ -599,6 +599,193 @@
             display: inline-block;
         }
 
+        /* 报表视图专用样式 */
+        .analytics-container {
+            display: flex;
+            flex-direction: column;
+            gap: 25px;
+            animation: fadeIn 0.4s ease;
+        }
+
+        .report-card {
+            background: white;
+            border-radius: 16px;
+            padding: 25px 30px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+        }
+
+        .report-card h2 {
+            font-size: 20px;
+            color: #2d3748;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border-bottom: 2px solid #edf2f7;
+            padding-bottom: 12px;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+
+        .metric-box {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 16px 20px;
+            transition: all 0.2s ease;
+        }
+
+        .metric-box:hover {
+            border-color: #cbd5e1;
+            transform: translateY(-2px);
+        }
+
+        .metric-box .label {
+            font-size: 13px;
+            color: #64748b;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        .metric-box .val {
+            font-size: 26px;
+            font-weight: 800;
+            color: #1e293b;
+            line-height: 1.2;
+        }
+
+        .metric-box .sub {
+            font-size: 12px;
+            color: #94a3b8;
+            margin-top: 6px;
+        }
+
+        .fluctuation-tag {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 700;
+            margin-left: 8px;
+        }
+        .fluctuation-tag.up { background: #fee2e2; color: #ef4444; }
+        .fluctuation-tag.down { background: #dcfce7; color: #16a34a; }
+        .fluctuation-tag.flat { background: #f1f5f9; color: #64748b; }
+
+        /* 每日波动走势柱状图 */
+        .chart-wrapper {
+            overflow-x: auto;
+            padding: 20px 10px 10px;
+        }
+        .bar-chart {
+            display: flex;
+            align-items: flex-end;
+            gap: 16px;
+            height: 220px;
+            min-width: 600px;
+            border-bottom: 2px solid #e2e8f0;
+            padding-bottom: 10px;
+        }
+        .chart-bar-group {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            height: 100%;
+            justify-content: flex-end;
+            position: relative;
+        }
+        .bar-stack {
+            width: 32px;
+            display: flex;
+            flex-direction: column-reverse;
+            background: #f1f5f9;
+            border-radius: 6px 6px 0 0;
+            overflow: hidden;
+            transition: height 0.4s ease;
+            cursor: pointer;
+        }
+        .bar-stack:hover {
+            filter: brightness(1.1);
+        }
+        .bar-segment-tx {
+            background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
+            width: 100%;
+        }
+        .bar-segment-rx {
+            background: #38ef7d;
+            width: 100%;
+        }
+        .bar-label {
+            font-size: 11px;
+            color: #64748b;
+            margin-top: 8px;
+            white-space: nowrap;
+            text-align: center;
+        }
+        .bar-val-tip {
+            font-size: 11px;
+            font-weight: 700;
+            color: #475569;
+            margin-bottom: 4px;
+        }
+
+        /* 限速时间线 */
+        .timeline-container {
+            max-height: 400px;
+            overflow-y: auto;
+            padding-right: 10px;
+        }
+        .timeline-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 15px;
+            padding: 12px 0;
+            border-bottom: 1px dashed #e2e8f0;
+        }
+        .timeline-badge {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            flex-shrink: 0;
+        }
+        .timeline-badge.throttled {
+            background: #fee2e2;
+            color: #ef4444;
+        }
+        .timeline-badge.unthrottled {
+            background: #dcfce7;
+            color: #16a34a;
+        }
+        .timeline-content {
+            flex: 1;
+        }
+        .timeline-title {
+            font-size: 14px;
+            font-weight: 700;
+            color: #1e293b;
+        }
+        .timeline-time {
+            font-size: 12px;
+            color: #64748b;
+            margin-top: 3px;
+        }
+        .timeline-duration {
+            font-size: 12px;
+            color: #0284c7;
+            font-weight: 600;
+            margin-top: 2px;
+        }
+
         .loading {
             text-align: center;
             padding: 60px;
@@ -694,9 +881,10 @@
                 <button class="view-btn" onclick="switchView('list')">📋 列表视图</button>
                 <button class="view-btn" onclick="switchView('compact')">📦 紧凑视图</button>
                 <button class="view-btn" onclick="switchView('table')">📊 表格视图</button>
+                <button class="view-btn" onclick="switchView('analytics')">📈 运行分析报表</button>
             </div>
             
-            <div class="view-switcher" style="margin-top: 15px;">
+            <div id="sortSwitcher" class="view-switcher" style="margin-top: 15px;">
                 <button class="view-btn" onclick="sortServers('default')">🔄 默认排序</button>
                 <button class="view-btn" onclick="sortServers('today_traffic')">📅 今日流量</button>
                 <button class="view-btn" onclick="sortServers('traffic')">📊 累计流量</button>
@@ -717,8 +905,10 @@
 
     <script>
         const API_URL = '/api/status';
+        const ANALYTICS_API_URL = '/api/analytics';
         const REFRESH_INTERVAL = 10000;
         let currentData = null;
+        let analyticsData = null;
         let currentView = 'card';
         let currentSort = 'default';
         let sortedServers = [];
@@ -729,7 +919,11 @@
                 const result = await response.json();
                 if (result.success) {
                     currentData = result.data;
-                    updateView();
+                    if (currentView !== 'analytics') {
+                        updateView();
+                    } else {
+                        fetchAnalyticsData();
+                    }
                 }
             } catch (error) {
                 console.error('加载数据失败:', error);
@@ -738,11 +932,25 @@
             }
         }
 
+        async function fetchAnalyticsData() {
+            try {
+                const response = await fetch(ANALYTICS_API_URL);
+                const result = await response.json();
+                if (result.success) {
+                    analyticsData = result;
+                    renderAnalyticsView();
+                }
+            } catch (error) {
+                console.error('加载分析报表失败:', error);
+            }
+        }
+
         function formatTraffic(tib) {
+            if (tib === undefined || tib === null) return '0 GiB';
             if (tib >= 1) {
-                return `${tib.toFixed(3)} TiB`;
+                return `${Number(tib).toFixed(3)} TiB`;
             } else {
-                return `${(tib * 1024).toFixed(2)} GiB`;
+                return `${(Number(tib) * 1024).toFixed(2)} GiB`;
             }
         }
 
@@ -754,7 +962,14 @@
             });
             event.target.classList.add('active');
             
-            updateView();
+            const sortBar = document.getElementById('sortSwitcher');
+            if (view === 'analytics') {
+                if (sortBar) sortBar.style.display = 'none';
+                fetchAnalyticsData();
+            } else {
+                if (sortBar) sortBar.style.display = 'flex';
+                updateView();
+            }
         }
         
         function sortServers(sortType) {
@@ -855,9 +1070,165 @@
             } else if (currentView === 'table') {
                 serversContainer.className = '';
                 serversContainer.innerHTML = renderTableView();
+            } else if (currentView === 'analytics') {
+                renderAnalyticsView();
             }
 
             document.getElementById('lastUpdate').textContent = `📅 最后更新: ${currentData.last_update}`;
+        }
+
+        function renderAnalyticsView() {
+            if (!analyticsData) return;
+            const serversContainer = document.getElementById('servers');
+            serversContainer.className = 'analytics-container';
+
+            const d = analyticsData;
+            const today = d.today || {};
+            const yesterday = d.yesterday || {};
+            const thisWeek = d.this_week || {};
+            const thisMonth = d.this_month || {};
+            const thrSum = d.throttle_summary || {};
+            const recentDays = d.recent_days || [];
+            const months = d.monthly_history || [];
+            const timeline = d.throttle_timeline || [];
+
+            // 波动显示
+            let diffTag = '<span class="fluctuation-tag flat">持平 ➖</span>';
+            if (today.diff_vs_yesterday > 0) {
+                diffTag = `<span class="fluctuation-tag up">+${today.diff_vs_yesterday.toFixed(3)} TiB (+${today.pct_vs_yesterday}%) 📈</span>`;
+            } else if (today.diff_vs_yesterday < 0) {
+                diffTag = `<span class="fluctuation-tag down">${today.diff_vs_yesterday.toFixed(3)} TiB (${today.pct_vs_yesterday}%) 📉</span>`;
+            }
+
+            // 柱状图最高基准
+            const maxTraffic = Math.max(...recentDays.map(r => r.total_tib || 0), 0.1);
+
+            let chartBarsHtml = recentDays.map(item => {
+                const heightPct = Math.min(100, Math.max(5, (item.total_tib / maxTraffic) * 100));
+                const txPct = item.total_tib > 0 ? (item.tx_tib / item.total_tib) * 100 : 0;
+                const rxPct = item.total_tib > 0 ? (item.rx_tib / item.total_tib) * 100 : 0;
+                const isToday = item.date === today.date;
+
+                return `
+                    <div class="chart-bar-group">
+                        <div class="bar-val-tip">${item.total_tib.toFixed(2)}T</div>
+                        <div class="bar-stack" style="height: ${heightPct}%;" title="${item.date} (${item.weekday})\n总计: ${item.total_tib} TiB\n上传: ${item.tx_tib} TiB\n下载: ${item.rx_tib} TiB">
+                            <div class="bar-segment-tx" style="height: ${txPct}%;"></div>
+                            <div class="bar-segment-rx" style="height: ${rxPct}%;"></div>
+                        </div>
+                        <div class="bar-label" style="${isToday ? 'color: #667eea; font-weight: 700;' : ''}">
+                            ${item.date.slice(5)}<br>${item.weekday}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            // 月度表格
+            let monthlyRowsHtml = months.map(m => `
+                <tr style="${m.is_current ? 'background: #f8fafc; font-weight: 700;' : ''}">
+                    <td style="padding: 12px 16px; border-bottom: 1px solid #edf2f7;">
+                        <b>${m.month}</b> ${m.is_current ? '<span style="color:#667eea; font-size:12px;">(本月至今)</span>' : ''}
+                    </td>
+                    <td style="padding: 12px 16px; border-bottom: 1px solid #edf2f7; color: #667eea;">
+                        ${formatTraffic(m.tx_tib)}
+                    </td>
+                    <td style="padding: 12px 16px; border-bottom: 1px solid #edf2f7; color: #16a34a;">
+                        ${formatTraffic(m.rx_tib)}
+                    </td>
+                    <td style="padding: 12px 16px; border-bottom: 1px solid #edf2f7; font-weight: 800; color: #1e293b;">
+                        ${formatTraffic(m.total_tib)}
+                    </td>
+                </tr>
+            `).join('');
+
+            // 限速时间线
+            let timelineHtml = timeline.length === 0 ? '<div style="color: #64748b; padding: 20px 0;">✨ 暂无限速历史记录，服务器运行平稳！</div>' : timeline.map(ev => {
+                const isThr = ev.event === 'throttled';
+                return `
+                    <div class="timeline-item">
+                        <div class="timeline-badge ${isThr ? 'throttled' : 'unthrottled'}">
+                            ${isThr ? '🛑' : '🟢'}
+                        </div>
+                        <div class="timeline-content">
+                            <div class="timeline-title">
+                                ${isThr ? '触发限速保护' : '限速解除'} — <b>${ev.server_name}</b> (<code>${ev.ip}</code>)
+                            </div>
+                            <div class="timeline-time">⏰ 发生时间: ${ev.datetime}</div>
+                            ${ev.duration_str ? `<div class="timeline-duration">⏱️ 本次限速持续时长: <b>${ev.duration_str}</b></div>` : ''}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            serversContainer.innerHTML = `
+                <!-- 模块 1: 多周期统计卡片 -->
+                <div class="report-card">
+                    <h2>📊 官方多周期流量对比与每日波动</h2>
+                    <div class="metrics-grid">
+                        <div class="metric-box">
+                            <div class="label">📅 今日跑量 (日波动)</div>
+                            <div class="val">${formatTraffic(today.total_tib)} ${diffTag}</div>
+                            <div class="sub">↑ 上传: ${formatTraffic(today.tx_tib)} | ↓ 下载: ${formatTraffic(today.rx_tib)}</div>
+                        </div>
+                        <div class="metric-box">
+                            <div class="label">📆 昨日全天跑量</div>
+                            <div class="val">${formatTraffic(yesterday.total_tib)}</div>
+                            <div class="sub">↑ 上传: ${formatTraffic(yesterday.tx_tib)} | ↓ 下载: ${formatTraffic(yesterday.rx_tib)}</div>
+                        </div>
+                        <div class="metric-box">
+                            <div class="label">🗓️ 本周累计流量 (周一至今)</div>
+                            <div class="val">${formatTraffic(thisWeek.total_tib)}</div>
+                            <div class="sub">↑ 上传: ${formatTraffic(thisWeek.tx_tib)} | ↓ 下载: ${formatTraffic(thisWeek.rx_tib)}</div>
+                        </div>
+                        <div class="metric-box">
+                            <div class="label">💾 本月累计流量 (${thisMonth.month})</div>
+                            <div class="val" style="color: #667eea;">${formatTraffic(thisMonth.total_tib)}</div>
+                            <div class="sub">↑ 上传: ${formatTraffic(thisMonth.tx_tib)} | ↓ 下载: ${formatTraffic(thisMonth.rx_tib)}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 模块 2: 14 天流量走势与每日波动图表 -->
+                <div class="report-card">
+                    <h2>📈 最近 14 天每日流量波动走势 (紫色:上传 / 绿色:下载)</h2>
+                    <div class="chart-wrapper">
+                        <div class="bar-chart">
+                            ${chartBarsHtml}
+                        </div>
+                    </div>
+                    <div style="font-size: 12px; color: #94a3b8; margin-top: 10px; text-align: right;">
+                        💡 柱条高度为每日总跑量占比，紫柱为上传量，绿柱为下载量
+                    </div>
+                </div>
+
+                <!-- 模块 3: 每月流量永久历史记录 (不怕机房重置) -->
+                <div class="report-card">
+                    <h2>🗓️ 每月流量永久账单 (自动归档，机房重置后依然永久保存)</h2>
+                    <div style="overflow-x: auto;">
+                        <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 14px;">
+                            <thead>
+                                <tr style="background: #f1f5f9; color: #475569; font-weight: 700;">
+                                    <th style="padding: 12px 16px;">月份周期</th>
+                                    <th style="padding: 12px 16px;">月度总上传</th>
+                                    <th style="padding: 12px 16px;">月度总下载</th>
+                                    <th style="padding: 12px 16px;">全月总流量</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${monthlyRowsHtml}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- 模块 4: 被限速的时间与事件轴 -->
+                <div class="report-card">
+                    <h2>🛑 详细被限速时间与事件记录</h2>
+                    <div class="timeline-container">
+                        ${timelineHtml}
+                    </div>
+                </div>
+            `;
         }
 
         function renderCardView() {

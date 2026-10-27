@@ -106,11 +106,12 @@ class NetcupTrafficMonitor:
             )
             # 注册 Bot 命令菜单
             self.telegram_notifier.set_commands()
-            # 设置命令回调函数
+            # 设置命令回调函数（全部使用 Netcup 官方真实数据，解耦 VT）
             self.telegram_notifier.get_status_callback = self._get_status_data
-            self.telegram_notifier.get_report_callback = self.fetch_vertex_run_info
+            self.telegram_notifier.get_report_callback = self.get_full_analytics_report_text
             self.telegram_notifier.force_check_callback = self.update_cached_data
-            self.telegram_notifier.get_daily_report_callback = self.get_daily_traffic_report_text
+            self.telegram_notifier.get_daily_report_callback = self.get_full_analytics_report_text
+            self.telegram_notifier.get_history_callback = self.get_throttle_timeline_text
             # 启动命令轮询
             self.telegram_notifier.start_polling()
             logger.info("[Telegram] 通知功能已启用，Bot 命令菜单已注册")
@@ -128,7 +129,7 @@ class NetcupTrafficMonitor:
         # 启动定时任务调度器
         if self.telegram_enabled:
             self.scheduler = BackgroundScheduler(timezone='Asia/Shanghai')
-            # 每日 23:55 自动发送今日流量统计日报
+            # 每日 23:55 自动发送 Netcup 今日流量与运行分析晚报（真实官方数据）
             self.scheduler.add_job(
                 func=self.send_daily_traffic_report,
                 trigger='cron',
@@ -136,16 +137,8 @@ class NetcupTrafficMonitor:
                 minute=55,
                 id='netcup_daily_traffic_report'
             )
-            # 如果配置了 Vertex，每小时 57 分自动发送 Vertex 运行日报
-            if self.vertex_base_url:
-                self.scheduler.add_job(
-                    func=self.send_vertex_daily_report,
-                    trigger='cron',
-                    minute=57,
-                    id='vertex_daily_report'
-                )
             self.scheduler.start()
-            logger.info("[调度器] 定时任务已启动 (每日23:55发送服务器流量日报)")
+            logger.info("[调度器] 定时任务已启动 (每日23:55自动推送流量与限速分析晚报)")
         else:
             self.scheduler = None
             logger.warning("[调度器] Telegram 未配置,定时日报任务未启动")
@@ -341,9 +334,16 @@ class NetcupTrafficMonitor:
             logger.error(f"保存限速历史失败: {e}")
 
     def load_daily_traffic(self) -> dict:
-        """加载每日流量基准统计"""
+        """加载每日流量与月度基准统计"""
         today = format_beijing_time(fmt='%Y-%m-%d')
-        default_data = {"date": today, "servers": {}, "history": {}}
+        current_month = format_beijing_time(fmt='%Y-%m')
+        default_data = {
+            "date": today,
+            "month": current_month,
+            "servers": {},
+            "history": {},
+            "months": {}
+        }
         if not os.path.exists(self.daily_traffic_file):
             return default_data
         try:
@@ -353,29 +353,32 @@ class NetcupTrafficMonitor:
                 return default_data
             data.setdefault("servers", {})
             data.setdefault("history", {})
+            data.setdefault("months", {})
             data.setdefault("date", today)
+            data.setdefault("month", current_month)
             return data
         except Exception as e:
             logger.error(f"加载每日流量记录出错: {e}")
             return default_data
 
     def save_daily_traffic(self):
-        """保存每日流量基准记录（原子写入防丢）"""
+        """保存每日与月度流量记录（直接写入并 fsync 确保容器与宿主机一致）"""
         try:
-            tmp_file = f"{self.daily_traffic_file}.tmp"
-            with open(tmp_file, 'w', encoding='utf-8') as f:
+            with open(self.daily_traffic_file, 'w', encoding='utf-8') as f:
                 json.dump(self.daily_traffic, f, indent=2, ensure_ascii=False)
-            os.replace(tmp_file, self.daily_traffic_file)
+                f.flush()
+                os.fsync(f.fileno())
         except Exception as e:
             logger.error(f"保存每日流量记录出错: {e}")
 
     def update_daily_traffic(self, ip: str, rx_mib: float, tx_mib: float, server_name: str = "") -> dict:
         """
-        更新并计算某台服务器今天的上传、下载与总流量 (TiB)
+        更新并计算某台服务器今天的上传、下载与总流量 (TiB)，并维护日历史与永久月度归档
         """
         today = format_beijing_time(fmt='%Y-%m-%d')
+        current_month = format_beijing_time(fmt='%Y-%m')
         
-        # 跨天重置与归档
+        # 1. 跨天归档与基准重置
         current_recorded_date = self.daily_traffic.get("date")
         if current_recorded_date != today:
             logger.info(f"[流量统计] 跨日变更: {current_recorded_date} -> {today}，归档前一日流量并重置基准")
@@ -392,9 +395,10 @@ class NetcupTrafficMonitor:
                         "total_tib": round(self.bytes_to_tib(d_rx + d_tx), 3)
                     }
                 self.daily_traffic.setdefault("history", {})[current_recorded_date] = daily_summary
-                # 保留最近 30 天历史
-                if len(self.daily_traffic["history"]) > 30:
-                    oldest_keys = sorted(self.daily_traffic["history"].keys())[:-30]
+                
+                # 历史日数据保留 180 天 (半年)
+                if len(self.daily_traffic["history"]) > 180:
+                    oldest_keys = sorted(self.daily_traffic["history"].keys())[:-180]
                     for k in oldest_keys:
                         self.daily_traffic["history"].pop(k, None)
 
@@ -406,6 +410,14 @@ class NetcupTrafficMonitor:
                 self.daily_traffic["servers"][s_ip]["base_rx_mib"] = last_rx
                 self.daily_traffic["servers"][s_ip]["base_tx_mib"] = last_tx
 
+        # 2. 跨月检测与月度永久归档
+        current_recorded_month = self.daily_traffic.get("month", current_month)
+        if current_recorded_month != current_month:
+            logger.info(f"[流量统计] 跨月变更: {current_recorded_month} -> {current_month}，结转上月流量记录")
+            self._sync_month_summary(current_recorded_month)
+            self.daily_traffic["month"] = current_month
+
+        # 3. 记录/更新当前服务器基准
         servers = self.daily_traffic.setdefault("servers", {})
         if ip not in servers:
             # 首次记录以当前值为初始基准
@@ -420,10 +432,12 @@ class NetcupTrafficMonitor:
             s_data = servers[ip]
             if server_name:
                 s_data["server_name"] = server_name
-            # 如果机房重启或网卡计数器清零，自动校准基准
+            # 如果机房重启或月初网卡计数器清零，自动校准基准
             if tx_mib < s_data.get("base_tx_mib", 0):
+                logger.info(f"[{ip}] 检测到网卡发送计数清零({s_data.get('base_tx_mib')} -> {tx_mib})，自动重置日基准")
                 s_data["base_tx_mib"] = tx_mib
             if rx_mib < s_data.get("base_rx_mib", 0):
+                logger.info(f"[{ip}] 检测到网卡接收计数清零({s_data.get('base_rx_mib')} -> {rx_mib})，自动重置日基准")
                 s_data["base_rx_mib"] = rx_mib
             s_data["last_rx_mib"] = rx_mib
             s_data["last_tx_mib"] = tx_mib
@@ -435,6 +449,11 @@ class NetcupTrafficMonitor:
         today_tx_tib = self.bytes_to_tib(delta_tx_mib)
         today_total_tib = today_rx_tib + today_tx_tib
 
+        # 同步更新当月最新累计到 months[current_month]
+        self._sync_month_summary(current_month, current_day_data={
+            ip: {"rx_tib": today_rx_tib, "tx_tib": today_tx_tib, "total_tib": today_total_tib, "name": server_name}
+        })
+
         self.save_daily_traffic()
 
         return {
@@ -443,77 +462,366 @@ class NetcupTrafficMonitor:
             "today_traffic_tib": round(today_total_tib, 3)
         }
 
-    def get_daily_traffic_report_text(self) -> str:
-        """获取每日流量报告文本（供 Telegram 命令与定时播报使用）"""
+    def _sync_month_summary(self, target_month: str, current_day_data: dict = None):
+        """汇总指定月份的所有天数流量并持久化存档在 months 中，永久不丢"""
+        months = self.daily_traffic.setdefault("months", {})
+        month_summary = {}
+
+        # 统计该月已归档的历史日
+        for date_str, s_map in self.daily_traffic.get("history", {}).items():
+            if date_str.startswith(target_month) and isinstance(s_map, dict):
+                for s_ip, stat in s_map.items():
+                    m_item = month_summary.setdefault(s_ip, {
+                        "name": stat.get("name", s_ip),
+                        "rx_tib": 0.0,
+                        "tx_tib": 0.0,
+                        "total_tib": 0.0,
+                        "days_count": 0
+                    })
+                    m_item["rx_tib"] += stat.get("rx_tib", 0.0)
+                    m_item["tx_tib"] += stat.get("tx_tib", 0.0)
+                    m_item["total_tib"] += stat.get("total_tib", 0.0)
+                    m_item["days_count"] += 1
+
+        # 若统计的是当月，还要加上今日实时的流量
         today = format_beijing_time(fmt='%Y-%m-%d')
-        servers = self.cached_data
+        if target_month == today[:7] and current_day_data:
+            for s_ip, stat in current_day_data.items():
+                m_item = month_summary.setdefault(s_ip, {
+                    "name": stat.get("name", s_ip),
+                    "rx_tib": 0.0,
+                    "tx_tib": 0.0,
+                    "total_tib": 0.0,
+                    "days_count": 0
+                })
+                m_item["rx_tib"] += stat.get("rx_tib", 0.0)
+                m_item["tx_tib"] += stat.get("tx_tib", 0.0)
+                m_item["total_tib"] += stat.get("total_tib", 0.0)
 
-        # 优先使用实时缓存数据
-        if servers:
-            lines = [f"<b>📊 Netcup 今日服务器流量报告</b> (<code>{today}</code>)\n"]
-            total_today_tx = 0.0
-            total_today_rx = 0.0
+        # 保留三位小数
+        for s_ip, m_item in month_summary.items():
+            m_item["rx_tib"] = round(m_item["rx_tib"], 3)
+            m_item["tx_tib"] = round(m_item["tx_tib"], 3)
+            m_item["total_tib"] = round(m_item["total_tib"], 3)
 
-            for ip, s in servers.items():
-                name = s.get("server_name", ip)
-                t_tx = s.get("today_tx_tib", 0.0)
-                t_rx = s.get("today_rx_tib", 0.0)
-                t_tot = s.get("today_traffic_tib", 0.0)
-                tot_all = s.get("traffic_tib", 0.0)
-                total_today_tx += t_tx
-                total_today_rx += t_rx
+        if month_summary:
+            months[target_month] = month_summary
 
-                lines.append(f"🖥️ <b>{name}</b> (<code>{ip}</code>)")
-                lines.append(f"  • 今日上传: <code>{t_tx:.3f} TiB</code>")
-                lines.append(f"  • 今日下载: <code>{t_rx:.3f} TiB</code>")
-                lines.append(f"  • 今日总计: <code>{t_tot:.3f} TiB</code> (累计总流量: {tot_all:.3f} TiB)\n")
+    def get_analytics_summary(self) -> dict:
+        """
+        计算全维度的流量与限速分析报表数据：
+        - 每日波动（今日 vs 昨日涨跌）
+        - 最近 14 天每日明细
+        - 本周累计 vs 上周对比
+        - 本月累计与历史月度账单（永久保存，不怕月度重置）
+        - 限速时间明细与事件时间轴
+        """
+        now_dt = get_beijing_now()
+        today_str = now_dt.strftime('%Y-%m-%d')
+        yesterday_str = (now_dt - timedelta(days=1)).strftime('%Y-%m-%d')
+        current_month_str = now_dt.strftime('%Y-%m')
 
-            total_today = total_today_tx + total_today_rx
-            lines.append("<b>📈 全服今日总计:</b>")
-            lines.append(f"↑ 上传: <code>{total_today_tx:.3f} TiB</code> | ↓ 下载: <code>{total_today_rx:.3f} TiB</code>")
-            lines.append(f"🌐 今日总流量: <b><code>{total_today:.3f} TiB</code></b>")
-            lines.append(f"\n<i>⏰ 统计时间: {format_beijing_time()}</i>")
-            return "\n".join(lines)
+        # 1. 今日实时数据汇总
+        today_tx = 0.0
+        today_rx = 0.0
+        servers_today = {}
+        for ip, s in self.cached_data.items():
+            tx = s.get("today_tx_tib", 0.0)
+            rx = s.get("today_rx_tib", 0.0)
+            tot = s.get("today_traffic_tib", 0.0)
+            today_tx += tx
+            today_rx += rx
+            servers_today[ip] = {
+                "name": s.get("server_name", ip),
+                "tx_tib": round(tx, 3),
+                "rx_tib": round(rx, 3),
+                "total_tib": round(tot, 3),
+                "disk_free_gib": s.get("free_disk_gib"),
+                "throttled": s.get("trafficThrottled", False)
+            }
+        today_total = today_tx + today_rx
 
-        # 缓存暂未生成时，回退从 daily_traffic.json 基准提取
-        dt_servers = self.daily_traffic.get("servers", {})
-        if dt_servers:
-            lines = [f"<b>📊 Netcup 今日服务器流量报告</b> (<code>{today}</code>)\n"]
-            total_today_tx = 0.0
-            total_today_rx = 0.0
+        # 2. 昨日数据汇总
+        yesterday_map = self.daily_traffic.get("history", {}).get(yesterday_str, {})
+        yesterday_tx = sum(v.get("tx_tib", 0.0) for v in yesterday_map.values()) if isinstance(yesterday_map, dict) else 0.0
+        yesterday_rx = sum(v.get("rx_tib", 0.0) for v in yesterday_map.values()) if isinstance(yesterday_map, dict) else 0.0
+        yesterday_total = yesterday_tx + yesterday_rx
 
-            for ip, s_info in dt_servers.items():
-                name = s_info.get("server_name", ip)
-                d_rx = max(0.0, s_info.get("last_rx_mib", 0) - s_info.get("base_rx_mib", 0))
-                d_tx = max(0.0, s_info.get("last_tx_mib", 0) - s_info.get("base_tx_mib", 0))
-                t_rx = self.bytes_to_tib(d_rx)
-                t_tx = self.bytes_to_tib(d_tx)
-                t_tot = t_rx + t_tx
-                total_today_tx += t_tx
-                total_today_rx += t_rx
+        # 每日波动计算
+        diff_total = today_total - yesterday_total
+        pct_change = round((diff_total / yesterday_total * 100), 1) if yesterday_total > 0 else 0.0
 
-                lines.append(f"🖥️ <b>{name}</b> (<code>{ip}</code>)")
-                lines.append(f"  • 今日上传: <code>{t_tx:.3f} TiB</code>")
-                lines.append(f"  • 今日下载: <code>{t_rx:.3f} TiB</code>")
-                lines.append(f"  • 今日总计: <code>{t_tot:.3f} TiB</code>\n")
+        # 3. 最近 14 天每日明细数据 (包含今日)
+        recent_days = []
+        for i in range(13, -1, -1):
+            d_dt = now_dt - timedelta(days=i)
+            d_str = d_dt.strftime('%Y-%m-%d')
+            weekday_cn = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][d_dt.weekday()]
+            if d_str == today_str:
+                d_tx, d_rx, d_tot = today_tx, today_rx, today_total
+            else:
+                d_map = self.daily_traffic.get("history", {}).get(d_str, {})
+                d_tx = sum(v.get("tx_tib", 0.0) for v in d_map.values()) if isinstance(d_map, dict) else 0.0
+                d_rx = sum(v.get("rx_tib", 0.0) for v in d_map.values()) if isinstance(d_map, dict) else 0.0
+                d_tot = d_tx + d_rx
 
-            total_today = total_today_tx + total_today_rx
-            lines.append("<b>📈 全服今日总计:</b>")
-            lines.append(f"↑ 上传: <code>{total_today_tx:.3f} TiB</code> | ↓ 下载: <code>{total_today_rx:.3f} TiB</code>")
-            lines.append(f"🌐 今日总流量: <b><code>{total_today:.3f} TiB</code></b>")
-            lines.append(f"\n<i>⏰ 统计时间: {format_beijing_time()}</i>")
-            return "\n".join(lines)
+            recent_days.append({
+                "date": d_str,
+                "weekday": weekday_cn,
+                "tx_tib": round(d_tx, 3),
+                "rx_tib": round(d_rx, 3),
+                "total_tib": round(d_tot, 3)
+            })
 
-        return "📡 暂无服务器流量数据，数据采集中..."
+        # 4. 本周与上周累计
+        # 周一为一周开始
+        current_weekday = now_dt.weekday()
+        start_of_this_week = (now_dt - timedelta(days=current_weekday)).strftime('%Y-%m-%d')
+        start_of_last_week = (now_dt - timedelta(days=current_weekday + 7)).strftime('%Y-%m-%d')
+        end_of_last_week = (now_dt - timedelta(days=current_weekday + 1)).strftime('%Y-%m-%d')
+
+        this_week_tx, this_week_rx = 0.0, 0.0
+        last_week_tx, last_week_rx = 0.0, 0.0
+
+        # 历史记录中累加
+        for h_date, h_map in self.daily_traffic.get("history", {}).items():
+            if not isinstance(h_map, dict):
+                continue
+            h_tx = sum(v.get("tx_tib", 0.0) for v in h_map.values())
+            h_rx = sum(v.get("rx_tib", 0.0) for v in h_map.values())
+
+            if start_of_this_week <= h_date <= today_str:
+                this_week_tx += h_tx
+                this_week_rx += h_rx
+            elif start_of_last_week <= h_date <= end_of_last_week:
+                last_week_tx += h_tx
+                last_week_rx += h_rx
+
+        # 加上今日实时
+        this_week_tx += today_tx
+        this_week_rx += today_rx
+        this_week_total = this_week_tx + this_week_rx
+        last_week_total = last_week_tx + last_week_rx
+
+        # 5. 本月与历史各月份（永久归档，机房重置也不丢失）
+        months_dict = dict(self.daily_traffic.get("months", {}))
+        # 确保当月包含最新今日实时
+        this_month_data = months_dict.get(current_month_str, {})
+        this_month_tx = sum(v.get("tx_tib", 0.0) for v in this_month_data.values()) if isinstance(this_month_data, dict) else today_tx
+        this_month_rx = sum(v.get("rx_tib", 0.0) for v in this_month_data.values()) if isinstance(this_month_data, dict) else today_rx
+        this_month_total = this_month_tx + this_month_rx
+
+        monthly_history = []
+        for m_key in sorted(months_dict.keys(), reverse=True):
+            m_servers = months_dict[m_key]
+            m_tx = sum(v.get("tx_tib", 0.0) for v in m_servers.values()) if isinstance(m_servers, dict) else 0.0
+            m_rx = sum(v.get("rx_tib", 0.0) for v in m_servers.values()) if isinstance(m_servers, dict) else 0.0
+            monthly_history.append({
+                "month": m_key,
+                "tx_tib": round(m_tx, 3),
+                "rx_tib": round(m_rx, 3),
+                "total_tib": round(m_tx + m_rx, 3),
+                "is_current": (m_key == current_month_str)
+            })
+
+        # 6. 限速时间与事件时间轴
+        throttle_summary = {
+            "is_any_throttled": False,
+            "servers": {}
+        }
+        all_throttle_events = []
+
+        now_ts = now_dt.timestamp()
+        for ip, t_info in self.throttle_history.items():
+            is_thr = t_info.get("current_throttled", False)
+            if is_thr:
+                throttle_summary["is_any_throttled"] = True
+
+            curr_dur = 0
+            if is_thr and t_info.get("last_throttle_time"):
+                curr_dur = int(now_ts - t_info["last_throttle_time"])
+
+            s_name = t_info.get("server_name", ip)
+            throttle_summary["servers"][ip] = {
+                "name": s_name,
+                "current_throttled": is_thr,
+                "current_duration": self.format_duration(curr_dur) if curr_dur > 0 else "0秒",
+                "throttle_count": t_info.get("throttle_count", 0),
+                "total_throttled_time": self.format_duration(t_info.get("total_throttled_seconds", 0))
+            }
+
+            # 收集事件时间线
+            events = t_info.get("history", [])
+            for ev in events:
+                all_throttle_events.append({
+                    "ip": ip,
+                    "server_name": s_name,
+                    "event": ev.get("event"),
+                    "datetime": ev.get("datetime"),
+                    "timestamp": ev.get("timestamp", 0),
+                    "duration_seconds": ev.get("duration_seconds", 0),
+                    "duration_str": self.format_duration(ev.get("duration_seconds", 0)) if ev.get("duration_seconds") else None
+                })
+
+        # 按时间倒序排序限速事件
+        all_throttle_events.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+
+        return {
+            "success": True,
+            "generated_at": format_beijing_time(),
+            "today": {
+                "date": today_str,
+                "tx_tib": round(today_tx, 3),
+                "rx_tib": round(today_rx, 3),
+                "total_tib": round(today_total, 3),
+                "diff_vs_yesterday": round(diff_total, 3),
+                "pct_vs_yesterday": pct_change,
+                "servers": servers_today
+            },
+            "yesterday": {
+                "date": yesterday_str,
+                "tx_tib": round(yesterday_tx, 3),
+                "rx_tib": round(yesterday_rx, 3),
+                "total_tib": round(yesterday_total, 3)
+            },
+            "this_week": {
+                "tx_tib": round(this_week_tx, 3),
+                "rx_tib": round(this_week_rx, 3),
+                "total_tib": round(this_week_total, 3)
+            },
+            "last_week": {
+                "tx_tib": round(last_week_tx, 3),
+                "rx_tib": round(last_week_rx, 3),
+                "total_tib": round(last_week_total, 3)
+            },
+            "this_month": {
+                "month": current_month_str,
+                "tx_tib": round(this_month_tx, 3),
+                "rx_tib": round(this_month_rx, 3),
+                "total_tib": round(this_month_total, 3)
+            },
+            "recent_days": recent_days,
+            "monthly_history": monthly_history,
+            "throttle_summary": throttle_summary,
+            "throttle_timeline": all_throttle_events[:30]  # 最新30条限速事件
+        }
+
+    def get_full_analytics_report_text(self) -> str:
+        """
+        生成权威完整的 Netcup 官方流量与限速多维报表文本
+        支持 Telegram Bot (/report 或 /daily) 直接发送
+        """
+        data = self.get_analytics_summary()
+        today = data["today"]
+        yesterday = data["yesterday"]
+        week = data["this_week"]
+        month = data["this_month"]
+        thr_sum = data["throttle_summary"]
+        timeline = data["throttle_timeline"]
+
+        # 波动符号与描述
+        diff_tot = today["diff_vs_yesterday"]
+        pct = today["pct_vs_yesterday"]
+        if diff_tot > 0:
+            fluctuation_str = f"+{diff_tot:.3f} TiB (+{pct}%) 📈"
+        elif diff_tot < 0:
+            fluctuation_str = f"{diff_tot:.3f} TiB ({pct}%) 📉"
+        else:
+            fluctuation_str = "持平 ➖"
+
+        lines = [
+            f"<b>📊 Netcup 官方流量与运行分析报表</b>\n",
+            f"📅 <b>今日流量 ({today['date']})</b>",
+            f"• 今日总计: <b><code>{today['total_tib']:.3f} TiB</code></b>",
+            f"• 较昨日波动: <code>{fluctuation_str}</code>",
+            f"• 今日上传: <code>{today['tx_tib']:.3f} TiB</code>",
+            f"• 今日下载: <code>{today['rx_tib']:.3f} TiB</code>\n",
+            f"📆 <b>多周期流量统计</b>",
+            f"• 昨日流量: <code>{yesterday['total_tib']:.3f} TiB</code> (↑{yesterday['tx_tib']:.3f} / ↓{yesterday['rx_tib']:.3f})",
+            f"• 本周累计: <b><code>{week['total_tib']:.3f} TiB</code></b> (↑{week['tx_tib']:.3f} / ↓{week['rx_tib']:.3f})",
+            f"• <b>本月累计 ({month['month']})</b>: <b><code>{month['total_tib']:.3f} TiB</code></b> (↑{month['tx_tib']:.3f} / ↓{month['rx_tib']:.3f})\n"
+        ]
+
+        # 历史月份简览 (若有多月)
+        hist_months = [m for m in data["monthly_history"] if not m.get("is_current")]
+        if hist_months:
+            lines.append("🗓️ <b>历史月份账单 (永久归档)</b>")
+            for m in hist_months[:3]:
+                lines.append(f"• {m['month']}: <code>{m['total_tib']:.3f} TiB</code> (↑{m['tx_tib']:.3f} / ↓{m['rx_tib']:.3f})")
+            lines.append("")
+
+        # 服务器单机明细与磁盘
+        lines.append("🖥️ <b>服务器单机明细</b>")
+        for ip, s in today["servers"].items():
+            status_ico = "🔴" if s["throttled"] else "🟢"
+            disk_str = f"{s['disk_free_gib']:.1f} GiB" if s["disk_free_gib"] is not None else "检测中"
+            lines.append(f"{status_ico} <b>{s['name']}</b> (<code>{ip}</code>)")
+            lines.append(f"   • 今日: <code>{s['total_tib']:.3f} TiB</code> (↑{s['tx_tib']:.3f} / ↓{s['rx_tib']:.3f})")
+            lines.append(f"   • 磁盘可用: <code>{disk_str}</code>")
+        lines.append("")
+
+        # 限速时间与事件
+        lines.append("🛑 <b>限速事件与时间记录</b>")
+        for ip, ts in thr_sum["servers"].items():
+            stat_desc = f"限速中 (已持续 {ts['current_duration']})" if ts["current_throttled"] else "正常"
+            lines.append(f"• {ts['name']}: {stat_desc}，累计限速: <code>{ts['total_throttled_time']}</code> ({ts['throttle_count']}次)")
+
+        # 列出最近 3 次具体的被限速时间段
+        recent_thrs = []
+        for ev in timeline:
+            if ev.get("event") == "unthrottled":
+                dur = ev.get("duration_str", "未知")
+                recent_thrs.append(f"• {ev.get('datetime')}: 解除限速 (持续 {dur})")
+            elif ev.get("event") == "throttled":
+                recent_thrs.append(f"• {ev.get('datetime')}: 触发限速 ⚠️")
+            if len(recent_thrs) >= 3:
+                break
+
+        if recent_thrs:
+            lines.append("\n<b>⏱️ 最近限速记录:</b>")
+            lines.extend(recent_thrs)
+
+        lines.append(f"\n<i>⏰ 统计时间: {data['generated_at']}</i>")
+        return "\n".join(lines)
+
+    def get_throttle_timeline_text(self) -> str:
+        """生成详细的被限速时间列表文本（供 Telegram /history 命令）"""
+        data = self.get_analytics_summary()
+        timeline = data["throttle_timeline"]
+        thr_sum = data["throttle_summary"]
+
+        lines = ["<b>🛑 服务器被限速时间记录明细</b>\n"]
+        for ip, ts in thr_sum["servers"].items():
+            cur_tag = f"🔴 <b>限速中 (已持续 {ts['current_duration']})</b>" if ts["current_throttled"] else "🟢 正常运行中"
+            lines.append(f"🖥️ <b>{ts['name']}</b> (<code>{ip}</code>)")
+            lines.append(f"• 当前状态: {cur_tag}")
+            lines.append(f"• 累计限速时长: <code>{ts['total_throttled_time']}</code>")
+            lines.append(f"• 累计限速次数: <b>{ts['throttle_count']}</b> 次\n")
+
+        if not timeline:
+            lines.append("✨ 暂无任何限速历史记录，服务运行良好！")
+        else:
+            lines.append("<b>📋 详细事件时间线 (最近 15 次):</b>")
+            for idx, ev in enumerate(timeline[:15], 1):
+                dt = ev.get("datetime", "未知")
+                ev_type = ev.get("event")
+                if ev_type == "throttled":
+                    lines.append(f"{idx}. 🔴 <code>{dt}</code> 触发限速")
+                elif ev_type == "unthrottled":
+                    dur = ev.get("duration_str", "未知")
+                    lines.append(f"{idx}. 🟢 <code>{dt}</code> 限速解除 (持续时长: <b>{dur}</b>)")
+
+        lines.append(f"\n<i>⏰ 查询时间: {format_beijing_time()}</i>")
+        return "\n".join(lines)
 
     def send_daily_traffic_report(self):
-        """发送每日流量报告到 Telegram"""
+        """发送每日流量与运行分析报告到 Telegram"""
         if not self.telegram_notifier:
             return
         try:
-            report_text = self.get_daily_traffic_report_text()
+            report_text = self.get_full_analytics_report_text()
             self.telegram_notifier.send_message(report_text)
-            logger.info("[调度器] 每日流量统计报告已推送至 Telegram")
+            logger.info("[调度器] 每日流量统计与运行报告已推送至 Telegram")
         except Exception as e:
             logger.error(f"[调度器] 推送每日流量报告失败: {e}")
 
@@ -905,6 +1213,15 @@ class NetcupTrafficMonitor:
                 return jsonify(self._get_status_data())
             except Exception as e:
                 logger.error(f"获取状态时发生错误: {e}")
+                return jsonify({"success": False, "error": str(e)}), 500
+
+        @self.app.route('/api/analytics', methods=['GET'])
+        def api_analytics():
+            """返回多维流量统计、每日波动、每月历史与限速时间线数据"""
+            try:
+                return jsonify(self.get_analytics_summary())
+            except Exception as e:
+                logger.error(f"获取分析报表失败: {e}")
                 return jsonify({"success": False, "error": str(e)}), 500
 
         @self.app.route('/api/vertex/report', methods=['GET'])
